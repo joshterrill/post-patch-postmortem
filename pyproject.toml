@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "patch-tuesday"
+name = "post-path-postmortem"
 version = "0.1.0"
 description = "Analyze Microsoft Patch Tuesday updates and download binary files for security research"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [
-    { name = "Patch Tuesday Analyzer" }
+    { name = "Josh Terrill <josh@hacked.codes>" }
 ]
 dependencies = [
     "httpx>=0.27.0",

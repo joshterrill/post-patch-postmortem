@@ -1,4 +1,4 @@
-# Patch Tuesday Analyzer
+# Post Path Postmortem
 
 A CLI tool for analyzing Microsoft Patch Tuesday security updates. Fetches patch data from MSRC, downloads update packages, extracts binaries, and compares pre/post-patch versions using BinDiff.
 
