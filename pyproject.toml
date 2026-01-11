@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "patch-tuesday"
+version = "0.1.0"
+description = "Analyze Microsoft Patch Tuesday updates and download binary files for security research"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Patch Tuesday Analyzer" }
+]
+dependencies = [
+    "httpx>=0.27.0",
+    "beautifulsoup4>=4.12.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "sqlite-utils>=3.36",
+    "pydantic>=2.5.0",
+    "lxml>=5.1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "pytest-mock>=3.12.0",
+    "respx>=0.20.0",
+]
+
+[project.scripts]
+patch-tuesday = "patch_tuesday.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/patch_tuesday"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v"
+
+[tool.coverage.run]
+source = ["src/patch_tuesday"]
+branch = true
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
