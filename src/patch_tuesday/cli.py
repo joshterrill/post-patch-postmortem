@@ -14,6 +14,7 @@ from . import __version__
 from .catalog_client import download_by_kb, list_catalog_entries, search_catalog
 from .database import (
     get_db,
+    get_db_path,
     get_patch,
     get_patches_by_date,
     get_patches_by_product,
@@ -29,6 +30,7 @@ from .extractor import (
     get_extraction_stats,
     list_extracted_files,
     DEFAULT_EXTRACTED_DIR,
+    DEFAULT_PACKAGES_DIR,
 )
 from .models import Architecture, Severity
 from .msrc_client import fetch_by_date, fetch_latest, get_update_ids
@@ -822,6 +824,99 @@ def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bo
         console.print("[yellow]No comparisons were generated[/yellow]")
         console.print(f"\n[dim]If automatic export fails, try manual mode:[/dim]")
         console.print(f"[dim]  patch-tuesday bindiff {kb} --manual[/dim]")
+
+
+@cli.command()
+@click.option("--db", is_flag=True, help="Clear the database")
+@click.option("--cache", is_flag=True, help="Clear downloaded files (packages, extracted, baseline, bindiff)")
+@click.option("--all", "clear_all", is_flag=True, help="Clear both database and cache")
+@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
+def clean(db: bool, cache: bool, clear_all: bool, force: bool) -> None:
+    """Clear local cache and/or database.
+    
+    Examples:
+    
+        patch-tuesday clean --db           # Clear only the database
+        
+        patch-tuesday clean --cache        # Clear only downloaded files
+        
+        patch-tuesday clean --all          # Clear everything
+        
+        patch-tuesday clean --all -f       # Clear everything without confirmation
+    """
+    import shutil
+    
+    print_header()
+    
+    if not (db or cache or clear_all):
+        console.print("\n[yellow]No action specified. Use --db, --cache, or --all[/yellow]")
+        console.print("[dim]Run 'patch-tuesday clean --help' for usage[/dim]")
+        return
+    
+    clear_db = db or clear_all
+    clear_cache = cache or clear_all
+    
+    # Show what will be deleted
+    console.print("\n[bold]The following will be deleted:[/bold]\n")
+    
+    items_to_delete = []
+    
+    if clear_db:
+        db_path = get_db_path()
+        if db_path.exists():
+            size = db_path.stat().st_size
+            size_str = f"{size / 1024:.1f} KB" if size < 1024 * 1024 else f"{size / 1024 / 1024:.1f} MB"
+            console.print(f"  [cyan]Database:[/cyan] {db_path} ({size_str})")
+            items_to_delete.append(("db", db_path))
+        else:
+            console.print(f"  [dim]Database: (not found)[/dim]")
+    
+    if clear_cache:
+        from .bindiff_client import DEFAULT_BINDIFF_DIR
+        
+        cache_dirs = [
+            ("Packages", DEFAULT_PACKAGES_DIR),
+            ("Extracted", DEFAULT_EXTRACTED_DIR),
+            ("Baseline", DEFAULT_BASELINE_DIR),
+            ("BinDiff", DEFAULT_BINDIFF_DIR),
+        ]
+        
+        for name, dir_path in cache_dirs:
+            if dir_path.exists():
+                # Calculate size
+                total_size = sum(f.stat().st_size for f in dir_path.rglob("*") if f.is_file())
+                file_count = sum(1 for f in dir_path.rglob("*") if f.is_file())
+                size_str = f"{total_size / 1024:.1f} KB" if total_size < 1024 * 1024 else f"{total_size / 1024 / 1024:.1f} MB"
+                console.print(f"  [cyan]{name}:[/cyan] {dir_path} ({file_count} files, {size_str})")
+                items_to_delete.append(("dir", dir_path))
+            else:
+                console.print(f"  [dim]{name}: (not found)[/dim]")
+    
+    if not items_to_delete:
+        console.print("\n[yellow]Nothing to delete.[/yellow]")
+        return
+    
+    # Confirm
+    if not force:
+        console.print()
+        if not click.confirm("Are you sure you want to delete these items?"):
+            console.print("[dim]Aborted.[/dim]")
+            return
+    
+    # Delete
+    console.print()
+    for item_type, path in items_to_delete:
+        try:
+            if item_type == "db":
+                path.unlink()
+                console.print(f"[green]✓ Deleted database: {path}[/green]")
+            else:
+                shutil.rmtree(path)
+                console.print(f"[green]✓ Deleted directory: {path}[/green]")
+        except Exception as e:
+            console.print(f"[red]✗ Failed to delete {path}: {e}[/red]")
+    
+    console.print("\n[green]Done![/green]")
 
 
 if __name__ == "__main__":

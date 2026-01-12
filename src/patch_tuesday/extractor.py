@@ -129,7 +129,51 @@ def _is_binary_file(path: Path) -> bool:
 
 
 def _get_file_version(file_path: Path) -> Optional[str]:
-    return None  # Would need pefile for full version extraction
+    """Extract version info from a PE file using pefile."""
+    try:
+        import pefile
+    except ImportError:
+        return None
+    
+    try:
+        pe = pefile.PE(str(file_path), fast_load=True)
+        pe.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]]
+        )
+        
+        if not hasattr(pe, "VS_FIXEDFILEINFO"):
+            pe.close()
+            return None
+        
+        # Extract version from VS_FIXEDFILEINFO
+        version_info = pe.VS_FIXEDFILEINFO[0] if pe.VS_FIXEDFILEINFO else None
+        if version_info:
+            ms = version_info.FileVersionMS
+            ls = version_info.FileVersionLS
+            version = f"{(ms >> 16) & 0xFFFF}.{ms & 0xFFFF}.{(ls >> 16) & 0xFFFF}.{ls & 0xFFFF}"
+            pe.close()
+            return version
+        
+        # Try to get version from StringFileInfo
+        if hasattr(pe, "FileInfo"):
+            for file_info in pe.FileInfo:
+                for info in file_info:
+                    if hasattr(info, "StringTable"):
+                        for st in info.StringTable:
+                            for entry in st.entries.items():
+                                if entry[0] == b"FileVersion" or entry[0] == "FileVersion":
+                                    pe.close()
+                                    version_str = entry[1]
+                                    if isinstance(version_str, bytes):
+                                        version_str = version_str.decode("utf-8", errors="ignore")
+                                    # Clean up version string (remove extra spaces, etc.)
+                                    version_str = version_str.strip().replace(" ", "")
+                                    return version_str
+        
+        pe.close()
+        return None
+    except Exception:
+        return None
 
 
 def extract_package(

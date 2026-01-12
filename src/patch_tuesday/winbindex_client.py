@@ -244,6 +244,38 @@ def _clean_filename(filename: str) -> str:
     return filename
 
 
+def _get_pe_version(file_path: Path) -> Optional[str]:
+    """Extract version info from a PE file using pefile."""
+    try:
+        import pefile
+    except ImportError:
+        return None
+    
+    try:
+        pe = pefile.PE(str(file_path), fast_load=True)
+        pe.parse_data_directories(
+            directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_RESOURCE"]]
+        )
+        
+        if not hasattr(pe, "VS_FIXEDFILEINFO"):
+            pe.close()
+            return None
+        
+        # Extract version from VS_FIXEDFILEINFO
+        version_info = pe.VS_FIXEDFILEINFO[0] if pe.VS_FIXEDFILEINFO else None
+        if version_info:
+            ms = version_info.FileVersionMS
+            ls = version_info.FileVersionLS
+            version = f"{(ms >> 16) & 0xFFFF}.{ms & 0xFFFF}.{(ls >> 16) & 0xFFFF}.{ls & 0xFFFF}"
+            pe.close()
+            return version
+        
+        pe.close()
+        return None
+    except Exception:
+        return None
+
+
 def fetch_baseline_for_extracted(
     extracted_dir: Path,
     kb_number: str,
@@ -283,12 +315,49 @@ def fetch_baseline_for_extracted(
             arch = Architecture.X64
         elif "x86" in str(binary_path).lower():
             arch = Architecture.X86
-        versions = list_file_versions(clean_name, arch, limit=10)
-        if not versions:
-            console.print(f"  [yellow]No versions found on WinBIndex[/yellow]")
-            continue
-        file_info = versions[0]
-        console.print(f"  [dim]Found version: {file_info.version} ({file_info.architecture.value})[/dim]")
+        
+        # Get the version of the patched binary so we can find the previous version
+        patched_version = _get_pe_version(binary_path)
+        
+        if patched_version:
+            console.print(f"  [dim]Patched binary version: {patched_version}[/dim]")
+            # Find the version immediately before the patched version
+            file_info = find_previous_version(clean_name, patched_version, arch)
+            if file_info:
+                console.print(f"  [green]Found baseline version: {file_info.version} (previous to {patched_version})[/green]")
+            else:
+                console.print(f"  [yellow]No previous version found for {patched_version}, trying latest available[/yellow]")
+                versions = list_file_versions(clean_name, arch, limit=10)
+                if versions:
+                    # Filter out versions >= patched version
+                    patched_tuple = _parse_version(patched_version)
+                    older_versions = [v for v in versions if _parse_version(v.version) < patched_tuple]
+                    if older_versions:
+                        file_info = older_versions[0]
+                        console.print(f"  [dim]Using version: {file_info.version}[/dim]")
+                    else:
+                        console.print(f"  [yellow]All available versions are >= {patched_version}, skipping[/yellow]")
+                        continue
+                else:
+                    console.print(f"  [yellow]No versions found on WinBIndex[/yellow]")
+                    continue
+        else:
+            # Fallback: if we can't read the version, take the second-newest version
+            # (assuming the newest might be the same as the patched one)
+            console.print(f"  [yellow]Could not read version from patched binary, using heuristic[/yellow]")
+            versions = list_file_versions(clean_name, arch, limit=10)
+            if not versions:
+                console.print(f"  [yellow]No versions found on WinBIndex[/yellow]")
+                continue
+            # Use second version if available, otherwise first
+            # This is a heuristic - the patched version might already be on WinBIndex
+            if len(versions) >= 2:
+                file_info = versions[1]
+                console.print(f"  [dim]Using second-newest version: {file_info.version} (heuristic)[/dim]")
+            else:
+                file_info = versions[0]
+                console.print(f"  [dim]Only one version available: {file_info.version}[/dim]")
+        
         path = download_file_version(file_info, output_dir, kb)
         if path:
             record = DownloadedFile(

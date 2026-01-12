@@ -20,6 +20,7 @@ dependencies = [
     "sqlite-utils>=3.36",
     "pydantic>=2.5.0",
     "lxml>=5.1.0",
+    "pefile>=2024.8.26",
 ]
 
 [project.optional-dependencies]
