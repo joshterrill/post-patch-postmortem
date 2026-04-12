@@ -15,6 +15,7 @@ from patch_tuesday.database import (
     get_downloaded_files,
     get_downloaded_files_by_type,
     get_patch,
+    get_patches_for_cve,
     get_patches_by_date,
     get_patches_by_product,
     get_product_by_id,
@@ -385,6 +386,26 @@ class TestPatchOperations:
         # Should match partial name
         results = get_patches_by_product(initialized_db, "23H2")
         assert len(results) == 1
+
+    def test_get_patches_for_cve(
+        self,
+        initialized_db: Database,
+        sample_patch: Patch,
+        sample_cve: CVE,
+    ):
+        """Test retrieving patches by CVE ID."""
+        patch_id = upsert_patch(initialized_db, sample_patch)
+        cve_id = upsert_cve(initialized_db, sample_cve)
+        link_patch_cve(initialized_db, patch_id, cve_id)
+        
+        results = get_patches_for_cve(initialized_db, sample_cve.cve_id.lower())
+        assert len(results) == 1
+        assert results[0].kb_number == sample_patch.kb_number
+    
+    def test_get_patches_for_cve_empty(self, initialized_db: Database):
+        """Test retrieving patches by CVE ID when no links exist."""
+        results = get_patches_for_cve(initialized_db, "CVE-2024-99999")
+        assert results == []
 
 
 class TestRelationshipOperations:

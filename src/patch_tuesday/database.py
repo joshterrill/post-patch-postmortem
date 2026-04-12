@@ -231,6 +231,33 @@ def get_cve(db: Database, cve_id: str) -> Optional[CVE]:
     return None
 
 
+def get_patches_for_cve(db: Database, cve_id: str) -> list[Patch]:
+    normalized_cve = cve_id.upper()
+    rows = db.execute(
+        """
+        SELECT DISTINCT p.id, p.kb_number, p.title, p.release_date, p.description, p.severity
+        FROM patches p
+        JOIN patch_cves pc ON p.id = pc.patch_id
+        JOIN cves c ON c.id = pc.cve_id
+        WHERE c.cve_id = ?
+        ORDER BY p.release_date DESC, p.kb_number ASC
+        """,
+        [normalized_cve],
+    ).fetchall()
+    
+    return [
+        Patch(
+            id=r[0],
+            kb_number=r[1],
+            title=r[2],
+            release_date=datetime.fromisoformat(r[3]),
+            description=r[4],
+            severity=Severity(r[5]) if r[5] else Severity.UNKNOWN,
+        )
+        for r in rows
+    ]
+
+
 def upsert_patch(db: Database, patch: Patch) -> int:
     conn = db.conn
     cursor = conn.cursor()

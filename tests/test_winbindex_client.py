@@ -10,9 +10,13 @@ import pytest
 import respx
 
 from patch_tuesday.winbindex_client import (
+    _build_symbol_server_urls,
     _calculate_sha256,
     _clean_filename,
+    _extract_release_date,
+    _parse_datetime,
     _parse_architecture,
+    _parse_int,
     _parse_version,
     download_file_version,
     fetch_baseline_for_extracted,
@@ -85,6 +89,80 @@ class TestParseVersion:
     def test_parse_version_empty(self):
         """Test parsing empty version string."""
         assert _parse_version("") == ()
+
+
+class TestUrlHelpers:
+    """Tests for Winbindex-compatible URL helper logic."""
+    
+    def test_parse_int(self):
+        """Test robust numeric parsing."""
+        assert _parse_int(123) == 123
+        assert _parse_int("123") == 123
+        assert _parse_int("0x10") == 16
+        assert _parse_int(None) is None
+        assert _parse_int("abc") is None
+    
+    def test_build_symbol_server_urls_with_virtual_size(self):
+        """Test standard timestamp+virtualSize symbol URL generation."""
+        info = {"timestamp": 0x65B4E6D0, "virtualSize": 0x12345}
+        urls = _build_symbol_server_urls("notepad.exe", info, "deadbeef")
+        
+        assert urls
+        assert urls[0].startswith("https://msdl.microsoft.com/download/symbols/notepad.exe/")
+        assert urls[0].endswith("/notepad.exe")
+        assert any("/deadbeef/notepad.exe" in u for u in urls)
+    
+    def test_build_symbol_server_urls_with_sizeofimage_fallback(self):
+        """Test Winbindex-style multiple candidate URLs when virtualSize is absent."""
+        info = {
+            "timestamp": 0x65B4E6D0,
+            "size": 0xA000,
+            "lastSectionPointerToRawData": 0x7000,
+            "lastSectionVirtualAddress": 0x2000,
+        }
+        urls = _build_symbol_server_urls("notepad.exe", info, "hash123")
+        
+        # Should include multiple candidates + hash fallback
+        assert len(urls) > 2
+        assert any("/hash123/notepad.exe" in u for u in urls)
+
+
+class TestDateHelpers:
+    """Tests for release date extraction helpers."""
+    
+    def test_parse_datetime_timestamp_seconds(self):
+        """Test UNIX timestamp parsing (seconds)."""
+        dt = _parse_datetime(1700000000)
+        assert dt is not None
+        assert dt.year >= 2023
+    
+    def test_parse_datetime_iso(self):
+        """Test ISO string date parsing."""
+        dt = _parse_datetime("2026-02-10T12:34:56Z")
+        assert dt is not None
+        assert dt.year == 2026
+        assert dt.month == 2
+    
+    def test_extract_release_date_prefers_windows_versions(self):
+        """Test extracting explicit release date from windowsVersions metadata."""
+        entry = {
+            "windowsVersions": {
+                "win11": {
+                    "releaseDate": "2026-02-10",
+                }
+            }
+        }
+        file_info = {"timestamp": 1700000000}
+        dt = _extract_release_date(entry, file_info)
+        assert dt is not None
+        assert dt.year == 2026
+    
+    def test_extract_release_date_falls_back_to_timestamp(self):
+        """Test fallback to file timestamp when no explicit release date exists."""
+        entry = {"windowsVersions": {}}
+        file_info = {"timestamp": 1700000000}
+        dt = _extract_release_date(entry, file_info)
+        assert dt is not None
 
 
 class TestCalculateSha256:
@@ -223,6 +301,7 @@ class TestListFileVersions:
         
         assert len(result) == 2
         assert all(isinstance(f, WinBIndexFile) for f in result)
+        assert all(f.download_urls for f in result)
         # Should be sorted by version descending
         if len(result) >= 2:
             assert _parse_version(result[0].version) >= _parse_version(result[1].version)
@@ -289,6 +368,100 @@ class TestListFileVersions:
         assert len(result) <= 5
     
     @respx.mock
+    def test_list_file_versions_limit_applied_after_sort(self):
+        """Test that limit is applied after sorting all discovered versions."""
+        file_data = {
+            "hash_old_1": {
+                "fileInfo": {
+                    "version": "10.0.1",
+                    "machineType": 34404,
+                    "sha256": "old1",
+                    "timestamp": 1234567001,
+                    "virtualSize": 1000000,
+                },
+                "windowsVersions": {},
+            },
+            "hash_old_2": {
+                "fileInfo": {
+                    "version": "10.0.2",
+                    "machineType": 34404,
+                    "sha256": "old2",
+                    "timestamp": 1234567002,
+                    "virtualSize": 1000000,
+                },
+                "windowsVersions": {},
+            },
+            "hash_new_1": {
+                "fileInfo": {
+                    "version": "11.0.100",
+                    "machineType": 34404,
+                    "sha256": "new1",
+                    "timestamp": 2234567001,
+                    "virtualSize": 1000000,
+                },
+                "windowsVersions": {},
+            },
+            "hash_new_2": {
+                "fileInfo": {
+                    "version": "11.0.200",
+                    "machineType": 34404,
+                    "sha256": "new2",
+                    "timestamp": 2234567002,
+                    "virtualSize": 1000000,
+                },
+                "windowsVersions": {},
+            },
+        }
+        compressed = gzip.compress(json.dumps(file_data).encode())
+        
+        respx.get(
+            "https://winbindex.m417z.com/data/by_filename_compressed/test.dll.json.gz"
+        ).mock(return_value=httpx.Response(200, content=compressed))
+        
+        result = list_file_versions("test.dll", limit=2)
+        
+        assert len(result) == 2
+        assert result[0].version == "11.0.200"
+        assert result[1].version == "11.0.100"
+    
+    @respx.mock
+    def test_list_file_versions_sorts_by_release_date_first(self):
+        """Test that newer release dates are ranked above older ones."""
+        file_data = {
+            "hash_new_version_old_date": {
+                "fileInfo": {
+                    "version": "11.0.500",
+                    "machineType": 34404,
+                    "sha256": "newver",
+                    "timestamp": 1234567890,  # old
+                    "virtualSize": 1000000,
+                },
+                "windowsVersions": {"w11": {"releaseDate": "2020-01-01"}},
+            },
+            "hash_old_version_new_date": {
+                "fileInfo": {
+                    "version": "10.0.1",
+                    "machineType": 34404,
+                    "sha256": "oldver",
+                    "timestamp": 2234567890,  # newer
+                    "virtualSize": 1000000,
+                },
+                "windowsVersions": {"w11": {"releaseDate": "2026-02-10"}},
+            },
+        }
+        compressed = gzip.compress(json.dumps(file_data).encode())
+        
+        respx.get(
+            "https://winbindex.m417z.com/data/by_filename_compressed/test.dll.json.gz"
+        ).mock(return_value=httpx.Response(200, content=compressed))
+        
+        result = list_file_versions("test.dll", limit=2)
+        
+        assert len(result) == 2
+        assert result[0].version == "10.0.1"
+        assert result[0].release_date is not None
+    
+    @respx.mock
     def test_list_file_versions_not_found(self):
         """Test handling file not found."""
         respx.get(
@@ -298,6 +471,48 @@ class TestListFileVersions:
         result = list_file_versions("nonexistent.dll")
         
         assert result == []
+
+    @respx.mock
+    def test_list_file_versions_extracts_kb_metadata(self):
+        """Test extracting KB/update metadata for a file version."""
+        file_data = {
+            "hash1": {
+                "fileInfo": {
+                    "version": "10.0.17763.6189",
+                    "machineType": 34404,
+                    "sha256": "abc123",
+                    "timestamp": 4002857474,
+                    "virtualSize": 2990080,
+                    "size": 2927600,
+                },
+                "windowsVersions": {
+                    "1809": {
+                        "KB5041578": {
+                            "updateInfo": {
+                                "heading": "August 13, 2024&#x2014;KB5041578",
+                                "releaseDate": "2024-08-13",
+                                "releaseVersion": "17763.6189",
+                                "updateUrl": "https://support.microsoft.com/help/5041578",
+                            }
+                        }
+                    }
+                },
+            },
+        }
+        compressed = gzip.compress(json.dumps(file_data).encode())
+
+        respx.get(
+            "https://winbindex.m417z.com/data/by_filename_compressed/tcpip.sys.json.gz"
+        ).mock(return_value=httpx.Response(200, content=compressed))
+
+        result = list_file_versions("tcpip.sys")
+
+        assert len(result) == 1
+        assert result[0].size == 2927600
+        assert len(result[0].updates) == 1
+        assert result[0].updates[0].kb_number == "KB5041578"
+        assert result[0].updates[0].windows_version == "1809"
+        assert result[0].updates[0].release_version == "17763.6189"
 
 
 class TestFindPreviousVersion:
@@ -423,6 +638,36 @@ class TestDownloadFileVersion:
         result = download_file_version(file_info, output_dir=tmp_path, show_progress=False)
         
         assert result is None
+    
+    @respx.mock
+    def test_download_file_version_tries_alternate_winbindex_urls(self, tmp_path: Path):
+        """Test retrying alternate candidate URLs from Winbindex logic."""
+        first_url = "https://msdl.microsoft.com/download/symbols/test.dll/AAAA/test.dll"
+        second_url = "https://msdl.microsoft.com/download/symbols/test.dll/BBBB/test.dll"
+        
+        respx.head(first_url).mock(return_value=httpx.Response(404))
+        respx.head(second_url).mock(return_value=httpx.Response(200))
+        respx.get(second_url).mock(
+            return_value=httpx.Response(
+                200,
+                content=b"candidate dll content",
+                headers={"content-length": "21"},
+            )
+        )
+        
+        file_info = WinBIndexFile(
+            filename="test.dll",
+            version="10.0.22621.1",
+            architecture=Architecture.X64,
+            sha256="abc123",
+            download_url=first_url,
+            download_urls=[first_url, second_url],
+        )
+        
+        result = download_file_version(file_info, output_dir=tmp_path, show_progress=False)
+        
+        assert result is not None
+        assert result.exists()
 
 
 class TestFetchBaselineForExtracted:
@@ -489,3 +734,32 @@ class TestShowFileVersions:
         
         # Should not raise
         show_file_versions("nonexistent.dll")
+
+    def test_show_file_versions_displays_kbs(self, capsys):
+        """Test KB/update metadata is rendered in the table."""
+        with patch(
+            "patch_tuesday.winbindex_client.list_file_versions",
+            return_value=[
+                WinBIndexFile(
+                    filename="tcpip.sys",
+                    version="10.0.17763.6189",
+                    architecture=Architecture.X64,
+                    sha256="a" * 64,
+                    download_url="https://example.com/tcpip.sys",
+                    size=2927600,
+                    updates=[
+                        {
+                            "kb_number": "KB5041578",
+                            "windows_version": "1809",
+                            "release_version": "17763.6189",
+                            "update_url": "https://support.microsoft.com/help/5041578",
+                        }
+                    ],
+                )
+            ],
+        ):
+            show_file_versions("tcpip.sys")
+
+        captured = capsys.readouterr()
+        assert "KBs" in captured.out
+        assert "2.79 MB" in captured.out

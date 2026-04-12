@@ -41,3 +41,5 @@ downloads/baseline/*
 # OS
 .DS_Store
 Thumbs.db
+PROJECT_SCOPE_AUDIT.md
+WORKFLOWS.md

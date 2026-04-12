@@ -2,6 +2,8 @@
 
 from datetime import datetime
 from pathlib import Path
+import re
+import shutil
 from typing import Optional
 
 import click
@@ -13,16 +15,16 @@ from rich.tree import Tree
 from . import __version__
 from .catalog_client import download_by_kb, list_catalog_entries, search_catalog
 from .database import (
+    add_downloaded_file,
     get_db,
     get_db_path,
     get_patch,
+    get_patches_for_cve,
     get_patches_by_date,
     get_patches_by_product,
     get_products_for_patch,
     get_stats,
     init_db,
-    add_downloaded_file,
-    get_downloaded_files,
     summarize_products,
 )
 from .extractor import (
@@ -35,7 +37,9 @@ from .extractor import (
 from .models import Architecture, Severity
 from .msrc_client import fetch_by_date, fetch_latest, get_update_ids
 from .winbindex_client import (
+    download_file_version,
     fetch_baseline_for_extracted,
+    list_file_versions,
     show_file_versions,
     DEFAULT_BASELINE_DIR,
 )
@@ -60,6 +64,98 @@ def cli() -> None:
     pass
 
 
+def _normalize_binary_base_name(name: str) -> str:
+    normalized = Path(name.strip().lower()).name
+    if "." in normalized:
+        return normalized.rsplit(".", 1)[0]
+    return normalized
+
+
+def _safe_label(text: str) -> str:
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", text.strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or "unknown"
+
+
+def _parse_date_option(date_str: Optional[str], field_name: str) -> Optional[datetime]:
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise click.ClickException(f"Invalid {field_name}: {date_str}. Use YYYY-MM-DD format.")
+
+
+def _select_version_entry(
+    entries: list,
+    version: Optional[str],
+    build: Optional[str],
+    release_date: Optional[datetime],
+    kb_number: Optional[str] = None,
+):
+    selected = entries
+    if version:
+        selected = [e for e in selected if e.version == version]
+    if build:
+        selected = [e for e in selected if build in (e.version or "")]
+    if release_date:
+        selected = [
+            e for e in selected
+            if e.release_date and e.release_date.date() == release_date.date()
+        ]
+    if kb_number:
+        normalized_kb = kb_number.strip().upper()
+        if not normalized_kb.startswith("KB"):
+            normalized_kb = f"KB{normalized_kb}"
+        selected = [
+            e for e in selected
+            if any(update.kb_number == normalized_kb for update in e.updates)
+        ]
+    return selected[0] if selected else None
+
+
+def _select_previous_distinct_entry(entries: list, selected_entry):
+    candidates = [
+        entry
+        for entry in entries
+        if entry.sha256 != selected_entry.sha256 and entry is not selected_entry
+    ]
+    if not candidates:
+        return None
+
+    selected_windows = {
+        update.windows_version
+        for update in getattr(selected_entry, "updates", [])
+        if update.windows_version
+    }
+    if selected_windows:
+        for entry in candidates:
+            entry_windows = {
+                update.windows_version
+                for update in getattr(entry, "updates", [])
+                if update.windows_version
+            }
+            if selected_windows & entry_windows:
+                return entry
+
+    selected_version_tuple = _parse_version_text(getattr(selected_entry, "version", ""))
+    if selected_version_tuple:
+        selected_branch = selected_version_tuple[:3]
+        for entry in candidates:
+            entry_branch = _parse_version_text(getattr(entry, "version", ""))[:3]
+            if entry_branch and entry_branch == selected_branch:
+                return entry
+
+    for entry in candidates:
+        return entry
+    return None
+
+
+def _parse_version_text(version_text: str) -> tuple[int, ...]:
+    parts = re.findall(r"\d+", version_text or "")
+    return tuple(int(part) for part in parts)
+
+
 @cli.command()
 @click.option(
     "--date",
@@ -80,7 +176,14 @@ def cli() -> None:
     is_flag=True,
     help="Show detailed progress",
 )
-def fetch(date: Optional[str], count: int, verbose: bool) -> None:
+@click.option(
+    "--source",
+    type=click.Choice(["rss", "api"]),
+    default="rss",
+    show_default=True,
+    help="Update ID source when fetching latest updates",
+)
+def fetch(date: Optional[str], count: int, verbose: bool, source: str) -> None:
     """
     Fetch Patch Tuesday data from MSRC.
     
@@ -107,7 +210,7 @@ def fetch(date: Optional[str], count: int, verbose: bool) -> None:
             return
         
         console.print(f"\n[cyan]Fetching patches for {year}-{month:02d}...[/cyan]\n")
-        result = fetch_by_date(year, month, verbose=True)
+        result = fetch_by_date(year, month, verbose=verbose)
         
         if result:
             console.print(f"\n[green]✓ Fetched {result['patches']} patches, "
@@ -116,7 +219,7 @@ def fetch(date: Optional[str], count: int, verbose: bool) -> None:
             console.print("[yellow]No patches found for that date[/yellow]")
     else:
         console.print(f"\n[cyan]Fetching latest {count} update(s)...[/cyan]\n")
-        results = fetch_latest(count, verbose=True)
+        results = fetch_latest(count, verbose=verbose, prefer_rss=(source == "rss"))
         
         if results:
             total_patches = sum(r['patches'] for r in results)
@@ -129,13 +232,20 @@ def fetch(date: Optional[str], count: int, verbose: bool) -> None:
 
 @cli.command(name="updates")
 @click.option("--year", "-y", type=int, help="Filter by year")
-def list_updates(year: Optional[int]) -> None:
+@click.option(
+    "--source",
+    type=click.Choice(["rss", "api"]),
+    default="rss",
+    show_default=True,
+    help="Update ID source",
+)
+def list_updates(year: Optional[int], source: str) -> None:
     """List available Patch Tuesday updates from MSRC."""
     print_header()
     
     console.print("\n[cyan]Fetching available updates...[/cyan]\n")
     
-    update_ids = get_update_ids(year)
+    update_ids = get_update_ids(year, prefer_rss=(source == "rss"))
     
     if not update_ids:
         console.print("[yellow]No updates found[/yellow]")
@@ -220,6 +330,7 @@ def list_patches(
             
             table = Table(title=f"Patches - {date_key}")
             table.add_column("KB", style="cyan", width=12)
+            table.add_column("Release Date", style="magenta", width=12)
             table.add_column("Severity", style="yellow", width=12)
             table.add_column("Products", style="green", width=30)
             table.add_column("Title", style="white", max_width=50)
@@ -238,6 +349,7 @@ def list_patches(
                 
                 table.add_row(
                     patch.kb_number,
+                    patch.release_date.strftime("%Y-%m-%d"),
                     f"[{sev_style}]{patch.severity.value}[/{sev_style}]",
                     products_str,
                     patch.title[:50] + ("..." if len(patch.title) > 50 else ""),
@@ -496,7 +608,8 @@ def baseline(kb_number: str) -> None:
 @cli.command()
 @click.argument("filename")
 @click.option("--arch", "-a", type=click.Choice(["x64", "x86", "arm64"]), help="Architecture filter")
-def versions(filename: str, arch: Optional[str]) -> None:
+@click.option("--limit", "-n", type=int, default=20, show_default=True, help="How many Winbindex versions to list")
+def versions(filename: str, arch: Optional[str], limit: int) -> None:
     """Show available versions of a Windows binary on WinBIndex."""
     print_header()
     
@@ -504,7 +617,360 @@ def versions(filename: str, arch: Optional[str]) -> None:
     
     console.print(f"\n[cyan]Looking up {filename}...[/cyan]\n")
     
-    show_file_versions(filename, architecture)
+    show_file_versions(filename, architecture, limit=limit)
+
+
+@cli.command(name="binary-diff")
+@click.argument("filename")
+@click.option("--arch", "-a", type=click.Choice(["x64", "x86", "arm64"]), default="x64", show_default=True, help="Architecture filter")
+@click.option("--kb", type=str, help="Select the newer/patched binary by KB number")
+@click.option("--new-version", type=str, help="Exact version string for the newer binary")
+@click.option("--old-version", type=str, help="Exact version string for the older binary")
+@click.option("--new-build", type=str, help="Substring to match in newer version/build")
+@click.option("--old-build", type=str, help="Substring to match in older version/build")
+@click.option("--new-date", type=str, help="Release date for newer version (YYYY-MM-DD)")
+@click.option("--old-date", type=str, help="Release date for older version (YYYY-MM-DD)")
+@click.option("--limit", type=int, default=200, show_default=True, help="How many Winbindex entries to inspect")
+@click.option("--list-only", "-l", is_flag=True, help="Only list available versions and selected pair")
+@click.option("--report", is_flag=True, help="Generate an HTML report with pseudo-C diffs for non-identical matched functions")
+@click.option("--pseudo-c", is_flag=True, help="Alias for report pseudo-C behavior")
+@click.option("--overwrite", is_flag=True, help="Regenerate exports/BinDiff/report even if cached artifacts already exist")
+def binary_diff(
+    filename: str,
+    arch: str,
+    kb: Optional[str],
+    new_version: Optional[str],
+    old_version: Optional[str],
+    new_build: Optional[str],
+    old_build: Optional[str],
+    new_date: Optional[str],
+    old_date: Optional[str],
+    limit: int,
+    list_only: bool,
+    report: bool,
+    pseudo_c: bool,
+    overwrite: bool,
+) -> None:
+    """Download and BinDiff two versions of a binary from Winbindex."""
+    from .bindiff_client import (
+        check_dependencies,
+        export_bindiff_report,
+        export_with_ghidra,
+        run_bindiff,
+        DEFAULT_BINDIFF_DIR,
+        _find_binexport_extension,
+    )
+    
+    print_header()
+    architecture = Architecture(arch)
+    if pseudo_c and not report:
+        report = True
+        console.print("[dim]`--pseudo-c` enabled: generating HTML report automatically[/dim]")
+    if report and not pseudo_c:
+        pseudo_c = True
+        console.print("[dim]`--report` enabled: including pseudo-C diffs for non-identical matched functions[/dim]")
+    new_date_dt = _parse_date_option(new_date, "--new-date")
+    old_date_dt = _parse_date_option(old_date, "--old-date")
+    
+    console.print(f"\n[cyan]Resolving versions for {filename} ({architecture.value})...[/cyan]\n")
+    versions_list = list_file_versions(filename, architecture=architecture, limit=max(2, limit))
+    if not versions_list:
+        console.print(f"[yellow]No versions found for {filename}[/yellow]")
+        return
+    
+    newer = _select_version_entry(versions_list, new_version, new_build, new_date_dt, kb_number=kb)
+    if not newer:
+        if any([kb, new_version, new_build, new_date_dt]):
+            console.print("[red]No matching newer version found with provided selectors[/red]")
+            return
+        newer = versions_list[0]
+    
+    remaining = [v for v in versions_list if v.sha256 != newer.sha256]
+    if not remaining:
+        console.print("[red]Could not find a second distinct version to diff against[/red]")
+        return
+    
+    older = None
+    if any([old_version, old_build, old_date_dt]):
+        older = _select_version_entry(remaining, old_version, old_build, old_date_dt)
+    if not older:
+        if any([old_version, old_build, old_date_dt]):
+            console.print("[red]No matching older version found with provided selectors[/red]")
+            return
+        newer_index = next(
+            (idx for idx, entry in enumerate(versions_list) if entry.sha256 == newer.sha256),
+            None,
+        )
+        if newer_index is not None:
+            older = _select_previous_distinct_entry(versions_list[newer_index + 1 :], newer)
+        if not older:
+            older = remaining[0]
+    
+    select_table = Table(title=f"Selected Versions for {filename}")
+    select_table.add_column("Role", style="cyan", width=8)
+    select_table.add_column("Version", style="green", max_width=45)
+    select_table.add_column("Release Date", style="magenta", width=12)
+    select_table.add_column("SHA256", style="dim", max_width=16)
+    
+    for role, entry in [("New", newer), ("Old", older)]:
+        release_str = entry.release_date.strftime("%Y-%m-%d") if entry.release_date else "N/A"
+        sha_str = entry.sha256[:16] + "..." if len(entry.sha256) > 16 else entry.sha256
+        version_str = entry.version or "<unknown>"
+        kb_values = sorted({item.kb_number for item in entry.updates if item.kb_number})
+        kb_suffix = f" [{', '.join(kb_values[:2])}{' +' + str(len(kb_values) - 2) if len(kb_values) > 2 else ''}]" if kb_values else ""
+        select_table.add_row(role, f"{version_str}{kb_suffix}", release_str, sha_str)
+    
+    console.print(select_table)
+    
+    if list_only:
+        console.print()
+        show_file_versions(filename, architecture)
+        return
+    
+    deps = check_dependencies()
+    ghidra_found, ghidra_path = deps["ghidra"]
+    bindiff_found, bindiff_path = deps["bindiff"]
+    binexport_ext = _find_binexport_extension(ghidra_path) if ghidra_path else None
+    
+    if not ghidra_found or not bindiff_found or not binexport_ext:
+        console.print("\n[red]Missing BinDiff dependencies.[/red]")
+        if not ghidra_found:
+            console.print("[dim]- Ghidra not found[/dim]")
+        if not bindiff_found:
+            console.print("[dim]- BinDiff not found[/dim]")
+        if not binexport_ext:
+            console.print("[dim]- Ghidra BinExport extension not found[/dim]")
+        console.print("[dim]Run: patch-tuesday bindiff KBxxxx --check-deps[/dim]")
+        return
+    
+    binary_root = DEFAULT_BINDIFF_DIR / "binary" / _safe_label(Path(filename).name)
+    downloads_root = binary_root / "downloads"
+    exports_root = binary_root / "exports"
+    reports_root = binary_root / "reports"
+    exports_root.mkdir(parents=True, exist_ok=True)
+    reports_root.mkdir(parents=True, exist_ok=True)
+    
+    console.print("\n[cyan]Downloading selected binaries...[/cyan]")
+    old_path = download_file_version(older, output_dir=downloads_root / "old", show_progress=True)
+    new_path = download_file_version(newer, output_dir=downloads_root / "new", show_progress=True)
+    if not old_path or not new_path:
+        console.print("[red]Failed to download one or both binaries[/red]")
+        return
+    
+    old_label = _safe_label(older.version or older.sha256[:12])
+    new_label = _safe_label(newer.version or newer.sha256[:12])
+    old_export = exports_root / f"{old_label}_old.BinExport"
+    new_export = exports_root / f"{new_label}_new.BinExport"
+    
+    console.print("\n[cyan]Exporting BinExport files with Ghidra...[/cyan]")
+    if old_export.exists() and not overwrite:
+        console.print(f"[dim]Reusing existing export: {old_export.name}[/dim]")
+    else:
+        if old_export.exists() and overwrite:
+            console.print(f"[dim]Overwriting existing export: {old_export.name}[/dim]")
+            old_export.unlink(missing_ok=True)
+        if not export_with_ghidra(old_path, old_export, ghidra_path=ghidra_path):
+            console.print(f"[red]Failed exporting old binary: {old_path}[/red]")
+            return
+    if new_export.exists() and not overwrite:
+        console.print(f"[dim]Reusing existing export: {new_export.name}[/dim]")
+    else:
+        if new_export.exists() and overwrite:
+            console.print(f"[dim]Overwriting existing export: {new_export.name}[/dim]")
+            new_export.unlink(missing_ok=True)
+        if not export_with_ghidra(new_path, new_export, ghidra_path=ghidra_path):
+            console.print(f"[red]Failed exporting new binary: {new_path}[/red]")
+            return
+
+    bindiff_name = _safe_label(f"{Path(filename).stem}_{old_label}_to_{new_label}")
+    expected_bindiff = exports_root / f"{bindiff_name}.BinDiff"
+    if expected_bindiff.exists() and not overwrite:
+        bindiff_file = expected_bindiff
+        console.print(f"\n[dim]Reusing existing BinDiff DB: {bindiff_file.name}[/dim]")
+    else:
+        if expected_bindiff.exists() and overwrite:
+            console.print(f"\n[dim]Overwriting existing BinDiff DB: {expected_bindiff.name}[/dim]")
+            expected_bindiff.unlink(missing_ok=True)
+        console.print("\n[cyan]Running BinDiff...[/cyan]")
+        bindiff_file = run_bindiff(
+            old_export,
+            new_export,
+            expected_bindiff,
+            bindiff_path=bindiff_path,
+        )
+        if not bindiff_file:
+            console.print("[red]BinDiff failed[/red]")
+            return
+        if bindiff_file.resolve() != expected_bindiff.resolve():
+            try:
+                shutil.copy2(bindiff_file, expected_bindiff)
+                bindiff_file = expected_bindiff
+                console.print(f"[dim]Cached BinDiff DB as: {bindiff_file.name}[/dim]")
+            except Exception:
+                pass
+
+    report_path = None
+    if report:
+        expected_report = reports_root / f"{bindiff_file.stem}_report.html"
+        if expected_report.exists() and not overwrite:
+            report_path = expected_report
+            console.print(f"[dim]Reusing existing report: {report_path.name}[/dim]")
+        else:
+            if expected_report.exists() and overwrite:
+                console.print(f"[dim]Overwriting existing report: {expected_report.name}[/dim]")
+                expected_report.unlink(missing_ok=True)
+            report_path = export_bindiff_report(
+                bindiff_file,
+                reports_root,
+                include_pseudocode=pseudo_c,
+                primary_binary=old_path if pseudo_c else None,
+                secondary_binary=new_path if pseudo_c else None,
+                ghidra_path=ghidra_path if pseudo_c else None,
+            )
+    
+    console.print("\n[green]✓ Binary diff completed[/green]")
+    console.print(f"[dim]Old binary: {old_path}[/dim]")
+    console.print(f"[dim]New binary: {new_path}[/dim]")
+    console.print(f"[dim]BinDiff DB: {bindiff_file}[/dim]")
+    if report_path:
+        console.print(f"[dim]Report: {report_path}[/dim]")
+
+
+@cli.command(name="cve")
+@click.argument("cve_id")
+@click.option("--arch", "-a", type=click.Choice(["x64", "x86", "arm64"]), help="Architecture filter for catalog downloads")
+@click.option(
+    "--fetch-count",
+    type=int,
+    default=24,
+    show_default=True,
+    help="If CVE isn't in DB, fetch this many recent updates before retrying",
+)
+@click.option("--list-only", "-l", is_flag=True, help="Only resolve and list KBs for the CVE")
+@click.option("--run-bindiff", is_flag=True, help="Run BinDiff comparisons after baseline acquisition")
+@click.option("--report", is_flag=True, help="Generate HTML reports with pseudo-C diffs for non-identical matched functions")
+@click.option("--pseudo-c", is_flag=True, help="Alias for report pseudo-C behavior")
+@click.option("--save-db", "-s", is_flag=True, help="Save extracted/baseline file records to database")
+def analyze_cve(
+    cve_id: str,
+    arch: Optional[str],
+    fetch_count: int,
+    list_only: bool,
+    run_bindiff: bool,
+    report: bool,
+    pseudo_c: bool,
+    save_db: bool,
+) -> None:
+    """Resolve a CVE to KBs and run the patch analysis workflow."""
+    print_header()
+    init_db()
+    if pseudo_c and not report:
+        report = True
+        console.print("[dim]`--pseudo-c` enabled: generating HTML reports automatically[/dim]")
+    if report and run_bindiff and not pseudo_c:
+        pseudo_c = True
+        console.print("[dim]`--report` enabled: including pseudo-C diffs for non-identical matched functions[/dim]")
+    
+    normalized_cve = cve_id.strip().upper()
+    if not re.match(r"^CVE-\d{4}-\d{4,}$", normalized_cve):
+        console.print(f"\n[red]Invalid CVE format: {cve_id}[/red]")
+        console.print("[dim]Expected format: CVE-YYYY-NNNN[/dim]")
+        return
+    
+    with get_db() as db:
+        patches = get_patches_for_cve(db, normalized_cve)
+        patch_products = {
+            patch.id: summarize_products(get_products_for_patch(db, patch.id))
+            for patch in patches
+            if patch.id is not None
+        }
+    
+    if not patches:
+        console.print(f"\n[yellow]{normalized_cve} not found in local database.[/yellow]")
+        console.print(f"[cyan]Fetching latest {fetch_count} updates via RSS/API and retrying...[/cyan]\n")
+        fetch_latest(fetch_count, verbose=True, prefer_rss=True)
+        with get_db() as db:
+            patches = get_patches_for_cve(db, normalized_cve)
+            patch_products = {
+                patch.id: summarize_products(get_products_for_patch(db, patch.id))
+                for patch in patches
+                if patch.id is not None
+            }
+    
+    if not patches:
+        console.print(f"\n[red]No KB mappings found for {normalized_cve}.[/red]")
+        console.print("[dim]Try: patch-tuesday fetch -d YYYY-MM[/dim]")
+        return
+    
+    table = Table(title=f"{normalized_cve} - Related KB Patches")
+    table.add_column("KB", style="cyan")
+    table.add_column("Release Date", style="green")
+    table.add_column("Severity", style="yellow")
+    table.add_column("Products", style="green", width=30)
+    table.add_column("Title", style="white", max_width=60)
+    
+    for patch in patches:
+        table.add_row(
+            patch.kb_number,
+            patch.release_date.strftime("%Y-%m-%d"),
+            patch.severity.value,
+            patch_products.get(patch.id, ""),
+            patch.title[:60] + ("..." if len(patch.title) > 60 else ""),
+        )
+    console.print()
+    console.print(table)
+    
+    if list_only:
+        return
+    if pseudo_c and not run_bindiff:
+        console.print("[yellow]`--pseudo-c` has no effect unless `--run-bindiff` is set[/yellow]")
+    
+    architecture = Architecture(arch) if arch else None
+    if run_bindiff:
+        from .bindiff_client import compare_binaries_for_kb, show_comparison_summary
+    
+    for patch in patches:
+        kb = patch.kb_number
+        console.print(f"\n[bold cyan]Processing {kb} for {normalized_cve}[/bold cyan]")
+        
+        downloaded_packages = download_by_kb(kb, architecture)
+        if not downloaded_packages:
+            console.print("[yellow]No new packages downloaded (continuing with local cache if available).[/yellow]")
+        
+        extracted = extract_by_kb(kb)
+        if not extracted:
+            console.print(f"[yellow]Skipping {kb}: no extracted binaries available.[/yellow]")
+            continue
+        
+        if save_db:
+            with get_db() as db:
+                for file in extracted:
+                    add_downloaded_file(db, file)
+        
+        extracted_dir = DEFAULT_EXTRACTED_DIR / kb
+        baseline_files = fetch_baseline_for_extracted(extracted_dir, kb)
+        
+        if baseline_files and save_db:
+            with get_db() as db:
+                for file in baseline_files:
+                    add_downloaded_file(db, file)
+        
+        total_extracted = len(list_extracted_files(kb))
+        console.print(
+            f"[green]✓ {kb}: extracted {total_extracted} files, baseline candidates {len(baseline_files)}[/green]"
+        )
+        
+        if run_bindiff:
+            results = compare_binaries_for_kb(
+                kb,
+                generate_reports=report,
+                include_pseudocode=pseudo_c,
+            )
+            if results:
+                console.print(f"[green]✓ Generated {len(results)} BinDiff comparison(s) for {kb}[/green]")
+                show_comparison_summary(results)
+            else:
+                console.print(f"[yellow]No BinDiff outputs generated for {kb}[/yellow]")
 
 
 @cli.command()
@@ -609,7 +1075,18 @@ def diff(kb_number: str) -> None:
 @click.option("--check-deps", is_flag=True, help="Check if BinDiff dependencies are installed")
 @click.option("--manual", is_flag=True, help="Show instructions for manual BinExport workflow")
 @click.option("--run-diff", is_flag=True, help="Run BinDiff on existing .BinExport files")
-def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bool) -> None:
+@click.option("--binary", "-b", type=str, help="Only compare a specific binary (e.g., notepad.exe)")
+@click.option("--report", is_flag=True, help="Generate HTML report(s) with pseudo-C diffs for non-identical matched functions")
+@click.option("--pseudo-c", is_flag=True, help="Alias for report pseudo-C behavior")
+def bindiff_compare(
+    kb_number: str,
+    check_deps: bool,
+    manual: bool,
+    run_diff: bool,
+    binary: Optional[str],
+    report: bool,
+    pseudo_c: bool,
+) -> None:
     """Compare pre-patch and post-patch binaries using BinDiff."""
     from .bindiff_client import (
         check_dependencies,
@@ -619,6 +1096,12 @@ def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bo
     )
     
     print_header()
+    if pseudo_c and not report:
+        report = True
+        console.print("[dim]`--pseudo-c` enabled: generating HTML reports automatically[/dim]")
+    if report and not run_diff and not pseudo_c:
+        pseudo_c = True
+        console.print("[dim]`--report` enabled: including pseudo-C diffs for non-identical matched functions[/dim]")
     
     if check_deps:
         from .bindiff_client import _find_binexport_extension
@@ -685,6 +1168,7 @@ def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bo
     kb_extracted = DEFAULT_EXTRACTED_DIR / kb
     kb_baseline = DEFAULT_BASELINE_DIR / kb
     exports_dir = DEFAULT_BINDIFF_DIR / kb / "exports"
+    target_base = _normalize_binary_base_name(binary) if binary else None
     
     if manual:
         # Show manual export instructions
@@ -728,7 +1212,17 @@ def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bo
                 if base_name not in extracted_files:
                     extracted_files[base_name] = f
         
-        pairs = [(baseline_files[n], extracted_files[n]) for n in extracted_files if n in baseline_files]
+        pairs = []
+        for n in extracted_files:
+            if n not in baseline_files:
+                continue
+            if target_base and n != target_base:
+                continue
+            pairs.append((baseline_files[n], extracted_files[n]))
+        
+        if target_base and not pairs:
+            console.print(f"[yellow]No matching baseline/extracted pair found for {target_base}[/yellow]")
+            return
         
         for i, (baseline, extracted) in enumerate(pairs, 1):
             base_name = extracted.stem.lower()
@@ -774,6 +1268,8 @@ def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bo
         
         for baseline_export in baseline_exports:
             base_name = baseline_export.stem.replace("_baseline", "")
+            if target_base and base_name.lower() != target_base:
+                continue
             patched_export = exports_dir / f"{base_name}_patched.BinExport"
             
             if not patched_export.exists():
@@ -785,7 +1281,9 @@ def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bo
             bindiff_file = run_bindiff(baseline_export, patched_export, exports_dir.parent / f"{base_name}.BinDiff")
             
             if bindiff_file:
-                report_path = export_bindiff_report(bindiff_file, exports_dir.parent / "reports")
+                if pseudo_c:
+                    console.print("[yellow]Pseudo-C diff embedding requires original binaries; skipping for --run-diff mode[/yellow]")
+                report_path = export_bindiff_report(bindiff_file, exports_dir.parent / "reports") if report else None
                 results.append(BinDiffResult(
                     primary_file=str(baseline_export),
                     secondary_file=str(patched_export),
@@ -811,7 +1309,12 @@ def bindiff_compare(kb_number: str, check_deps: bool, manual: bool, run_diff: bo
     # Default: automatic comparison
     console.print(f"\n[cyan]Running BinDiff comparison for {kb}...[/cyan]\n")
     
-    results = compare_binaries_for_kb(kb)
+    results = compare_binaries_for_kb(
+        kb,
+        binary_name=binary,
+        generate_reports=report,
+        include_pseudocode=pseudo_c,
+    )
     
     if results:
         console.print(f"\n[green]✓ Generated {len(results)} BinDiff comparison(s)[/green]")

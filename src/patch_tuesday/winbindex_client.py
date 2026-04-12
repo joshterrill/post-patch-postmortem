@@ -1,8 +1,9 @@
 """WinBIndex client for fetching pre-patch versions of Windows binaries."""
 
 import hashlib
+import html as html_lib
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -18,7 +19,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from .models import Architecture, DownloadedFile, WinBIndexFile
+from .models import Architecture, DownloadedFile, WinBIndexFile, WinBIndexUpdate
 
 console = Console()
 
@@ -52,6 +53,209 @@ def _parse_architecture(arch_value) -> Optional[Architecture]:
 def _parse_version(version_str: str) -> tuple[int, ...]:
     parts = re.findall(r"\d+", version_str)
     return tuple(int(p) for p in parts)
+
+
+def _datetime_to_timestamp(dt: Optional[datetime]) -> float:
+    if not dt:
+        return float("-inf")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+def _parse_datetime(value) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        # Heuristic: values > 1e11 are probably milliseconds.
+        ts = float(value)
+        if ts > 100_000_000_000:
+            ts /= 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        
+        # Try integer-like timestamps first.
+        try:
+            if text.isdigit():
+                return _parse_datetime(int(text))
+        except ValueError:
+            pass
+        
+        # ISO-like date/time parsing with UTC handling.
+        iso_text = text.replace("Z", "+00:00")
+        for candidate in (iso_text, text):
+            try:
+                return datetime.fromisoformat(candidate)
+            except ValueError:
+                continue
+        
+        # Date-only fallback.
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+    return None
+
+
+def _collect_datetimes(obj, keys_of_interest: set[str], out: list[datetime]) -> None:
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            key_lower = str(key).lower()
+            if key_lower in keys_of_interest:
+                dt = _parse_datetime(value)
+                if dt:
+                    out.append(dt)
+            _collect_datetimes(value, keys_of_interest, out)
+    elif isinstance(obj, list):
+        for item in obj:
+            _collect_datetimes(item, keys_of_interest, out)
+
+
+def _extract_release_date(entry: dict, file_info: dict) -> Optional[datetime]:
+    # Prefer explicit release/update dates from windowsVersions metadata.
+    windows_versions = entry.get("windowsVersions", {})
+    candidates: list[datetime] = []
+    date_keys = {
+        "releasedate",
+        "release_date",
+        "release",
+        "released",
+        "date",
+        "created",
+        "creationdate",
+        "updated",
+        "updatedat",
+        "lastupdated",
+        "builddate",
+    }
+    _collect_datetimes(windows_versions, date_keys, candidates)
+    if candidates:
+        return min(candidates)
+    
+    # Fallback to PE timestamp if present.
+    return _parse_datetime(file_info.get("timestamp"))
+
+
+def _extract_update_refs(entry: dict) -> list[WinBIndexUpdate]:
+    windows_versions = entry.get("windowsVersions", {})
+    updates: list[WinBIndexUpdate] = []
+
+    def walk(node, current_windows: Optional[str] = None) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                key_text = str(key)
+                if re.match(r"^KB\d{6,8}$", key_text, flags=re.IGNORECASE) and isinstance(value, dict):
+                    update_info = value.get("updateInfo", {}) if isinstance(value.get("updateInfo", {}), dict) else {}
+                    updates.append(
+                        WinBIndexUpdate(
+                            kb_number=key_text.upper(),
+                            windows_version=current_windows,
+                            release_date=_parse_datetime(update_info.get("releaseDate")),
+                            release_version=update_info.get("releaseVersion"),
+                            update_url=update_info.get("updateUrl"),
+                            heading=html_lib.unescape(str(update_info.get("heading", ""))).strip() or None,
+                        )
+                    )
+                    continue
+
+                next_windows = current_windows
+                if current_windows is None and not key_text.lower().startswith("kb"):
+                    next_windows = key_text
+                walk(value, next_windows)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, current_windows)
+
+    walk(windows_versions)
+
+    deduped: list[WinBIndexUpdate] = []
+    seen: set[tuple] = set()
+    for item in updates:
+        key = (
+            item.kb_number,
+            item.windows_version,
+            item.release_date.isoformat() if item.release_date else None,
+            item.release_version,
+            item.update_url,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _parse_int(value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text, 0)
+        except ValueError:
+            return None
+    return None
+
+
+def _make_symbol_server_url(filename: str, timestamp, size_of_image) -> Optional[str]:
+    ts = _parse_int(timestamp)
+    soi = _parse_int(size_of_image)
+    if ts is None or soi is None:
+        return None
+    return f"https://msdl.microsoft.com/download/symbols/{filename}/{ts:08X}{soi:x}/{filename}"
+
+
+def _build_symbol_server_urls(filename: str, file_info: dict, hash_key: str) -> list[str]:
+    """Mirror WinBindex URL generation for downloadable binaries."""
+    candidates: list[str] = []
+    
+    timestamp = file_info.get("timestamp")
+    virtual_size = file_info.get("virtualSize")
+    primary = _make_symbol_server_url(filename, timestamp, virtual_size)
+    if primary:
+        candidates.append(primary)
+    else:
+        size = _parse_int(file_info.get("size"))
+        last_ptr = _parse_int(file_info.get("lastSectionPointerToRawData"))
+        last_va = _parse_int(file_info.get("lastSectionVirtualAddress"))
+        ts = _parse_int(timestamp)
+        
+        # WinBindex fallback: try multiple possible SizeOfImage values.
+        if ts is not None and size and last_ptr is not None and last_va is not None:
+            start = max(last_va + last_ptr, size)
+            end = size + 2 * 1024 * 1024
+            for size_of_image in range(start, end + 1, 0x1000):
+                url = _make_symbol_server_url(filename, ts, size_of_image)
+                if url:
+                    candidates.append(url)
+    
+    if hash_key:
+        candidates.append(
+            f"https://msdl.microsoft.com/download/symbols/{filename}/{hash_key}/{filename}"
+        )
+    
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for url in candidates:
+        if url and url not in seen:
+            deduped.append(url)
+            seen.add(url)
+    return deduped
 
 
 def get_file_info(filename: str) -> Optional[dict]:
@@ -110,14 +314,10 @@ def list_file_versions(
         if architecture and arch and arch != architecture:
             continue
         
-        # Symbol server URL: {filename}/{timestamp:08X}{virtualSize:x}/{filename}
-        timestamp = file_info.get("timestamp", 0)
-        virtual_size = file_info.get("virtualSize", 0)
-        
-        if timestamp and virtual_size:
-            download_url = f"https://msdl.microsoft.com/download/symbols/{filename}/{timestamp:08X}{virtual_size:x}/{filename}"
-        else:
-            download_url = f"https://msdl.microsoft.com/download/symbols/{filename}/{hash_key}/{filename}"
+        download_urls = _build_symbol_server_urls(filename, file_info, hash_key)
+        if not download_urls:
+            continue
+        download_url = download_urls[0]
         
         file_entry = WinBIndexFile(
             filename=filename,
@@ -125,14 +325,18 @@ def list_file_versions(
             architecture=arch or Architecture.X64,
             sha256=sha256,
             download_url=download_url,
-            timestamp=None,
+            download_urls=download_urls,
+            release_date=_extract_release_date(entry, file_info),
+            timestamp=_parse_datetime(file_info.get("timestamp")),
+            size=_parse_int(file_info.get("size")),
+            updates=_extract_update_refs(entry),
         )
         versions.append(file_entry)
-        
-        if len(versions) >= limit:
-            break
-    versions.sort(key=lambda x: _parse_version(x.version), reverse=True)
-    return versions
+    versions.sort(
+        key=lambda x: (_datetime_to_timestamp(x.release_date), _parse_version(x.version)),
+        reverse=True,
+    )
+    return versions[:limit]
 
 
 def find_previous_version(
@@ -180,12 +384,22 @@ def download_file_version(
     if output_path.exists():
         console.print(f"[yellow]Already downloaded: {versioned_name}[/yellow]")
         return output_path
-    download_urls = [
-        file_info.download_url,
+    download_urls = list(file_info.download_urls)
+    if file_info.download_url:
+        download_urls.insert(0, file_info.download_url)
+    download_urls.extend([
         f"https://msdl.microsoft.com/download/symbols/{file_info.filename}/{file_info.sha256[:32]}/{file_info.filename}",
         f"https://symbols.nuget.org/download/symbols/{file_info.filename}/{file_info.sha256[:32]}/{file_info.filename}",
-    ]
+    ])
+    
+    deduped_urls: list[str] = []
+    seen_urls: set[str] = set()
     for url in download_urls:
+        if url and url not in seen_urls:
+            deduped_urls.append(url)
+            seen_urls.add(url)
+    
+    for url in deduped_urls:
         if not url:
             continue
         try:
@@ -373,20 +587,45 @@ def fetch_baseline_for_extracted(
     return downloaded
 
 
-def show_file_versions(filename: str, architecture: Optional[Architecture] = None) -> None:
-    versions = list_file_versions(filename, architecture, limit=20)
+def show_file_versions(
+    filename: str,
+    architecture: Optional[Architecture] = None,
+    limit: int = 20,
+) -> None:
+    versions = list_file_versions(filename, architecture, limit=limit)
     if not versions:
         console.print(f"[yellow]No versions found for {filename}[/yellow]")
         return
     table = Table(title=f"Available versions of {filename}")
+    table.add_column("KBs", style="yellow", max_width=14)
     table.add_column("Version", style="cyan")
+    table.add_column("Release Date", style="magenta", width=12)
+    table.add_column("Windows", style="blue", max_width=16)
     table.add_column("Architecture", style="green")
+    table.add_column("Size", style="white", justify="right")
     table.add_column("SHA256", style="dim", max_width=16)
     
     for v in versions:
+        release_date = v.release_date.strftime("%Y-%m-%d") if v.release_date else "N/A"
+        kb_values = sorted({item.kb_number for item in v.updates if item.kb_number})
+        kb_text = ", ".join(kb_values[:2]) if kb_values else "N/A"
+        if len(kb_values) > 2:
+            kb_text += f" +{len(kb_values) - 2}"
+        windows_values = sorted({item.windows_version for item in v.updates if item.windows_version})
+        windows_text = ", ".join(windows_values[:2]) if windows_values else "N/A"
+        if len(windows_values) > 2:
+            windows_text += f" +{len(windows_values) - 2}"
+        size_value = v.size or 0
+        size_text = "N/A"
+        if size_value > 0:
+            size_text = f"{size_value / 1024:.1f} KB" if size_value < 1024 * 1024 else f"{size_value / 1024 / 1024:.2f} MB"
         table.add_row(
+            kb_text,
             v.version,
+            release_date,
+            windows_text,
             v.architecture.value,
+            size_text,
             v.sha256[:16] + "..." if len(v.sha256) > 16 else v.sha256,
         )
     

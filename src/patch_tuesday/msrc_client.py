@@ -1,6 +1,7 @@
 """MSRC API client for fetching Patch Tuesday data."""
 
 import re
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional
 
@@ -21,11 +22,113 @@ from .models import CVE, Patch, Product, Severity
 console = Console()
 
 MSRC_API_BASE = "https://api.msrc.microsoft.com/cvrf/v2.0"
+MSRC_RSS_FEEDS = [
+    "https://api.msrc.microsoft.com/update-guide/rss",
+    "https://msrc.microsoft.com/update-guide/rss",
+]
 HEADERS = {"Accept": "application/json", "User-Agent": "PatchTuesdayAnalyzer/1.0"}
+RSS_HEADERS = {"Accept": "application/rss+xml, application/xml, text/xml", "User-Agent": "PatchTuesdayAnalyzer/1.0"}
+MONTH_NAME_MAP = {
+    "jan": "Jan",
+    "feb": "Feb",
+    "mar": "Mar",
+    "apr": "Apr",
+    "may": "May",
+    "jun": "Jun",
+    "jul": "Jul",
+    "aug": "Aug",
+    "sep": "Sep",
+    "oct": "Oct",
+    "nov": "Nov",
+    "dec": "Dec",
+}
+MONTH_NUMBER_MAP = {month: idx for idx, month in enumerate(MONTH_NAME_MAP.values(), start=1)}
 
 
-def get_update_ids(year: Optional[int] = None) -> list[str]:
+def _normalize_update_id(year: str, month_text: str) -> Optional[str]:
+    month = MONTH_NAME_MAP.get(month_text.strip().lower()[:3])
+    if not month:
+        return None
+    return f"{year}-{month}"
+
+
+def _update_id_sort_key(update_id: str) -> tuple[int, int]:
+    match = re.match(r"^(20\d{2})-([A-Za-z]{3})$", update_id)
+    if not match:
+        return (0, 0)
+    year = int(match.group(1))
+    month = MONTH_NUMBER_MAP.get(match.group(2).title(), 0)
+    return (year, month)
+
+
+def _extract_update_id_from_text(text: str) -> Optional[str]:
+    if not text:
+        return None
+    match = re.search(
+        r"\b(20\d{2})[-\s_/]*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return _normalize_update_id(match.group(1), match.group(2))
+
+
+def parse_update_ids_from_rss(rss_text: str, year: Optional[int] = None) -> list[str]:
+    """Parse update IDs (YYYY-Mon) from an RSS feed payload."""
+    root = ET.fromstring(rss_text)
+    update_ids: set[str] = set()
+    
+    for item in root.iter():
+        if not item.tag.endswith("item"):
+            continue
+        
+        candidates = []
+        for child in item:
+            if child.tag.endswith(("title", "link", "guid", "description")) and child.text:
+                candidates.append(child.text)
+        
+        update_id = None
+        for candidate in candidates:
+            update_id = _extract_update_id_from_text(candidate)
+            if update_id:
+                break
+        
+        if not update_id:
+            continue
+        
+        if year and not update_id.startswith(str(year)):
+            continue
+        update_ids.add(update_id)
+    
+    return sorted(update_ids, key=_update_id_sort_key, reverse=True)
+
+
+def get_update_ids_from_rss(year: Optional[int] = None) -> list[str]:
+    """Fetch update IDs from MSRC RSS feeds."""
+    for feed_url in MSRC_RSS_FEEDS:
+        try:
+            with httpx.Client(timeout=30.0, follow_redirects=True) as client:
+                response = client.get(feed_url, headers=RSS_HEADERS)
+                response.raise_for_status()
+                update_ids = parse_update_ids_from_rss(response.text, year=year)
+                if update_ids:
+                    return update_ids
+        except Exception:
+            continue
+    return []
+
+
+def get_update_ids(year: Optional[int] = None, prefer_rss: bool = True) -> list[str]:
     """Returns IDs like '2024-Jan', '2024-Feb', etc."""
+    if prefer_rss:
+        try:
+            rss_ids = get_update_ids_from_rss(year)
+            if rss_ids:
+                return rss_ids
+        except Exception:
+            pass
+    
     url = f"{MSRC_API_BASE}/updates"
     with httpx.Client(timeout=30.0) as client:
         response = client.get(url, headers=HEADERS)
@@ -43,7 +146,7 @@ def get_update_ids(year: Optional[int] = None) -> list[str]:
             else:
                 update_ids.append(update_id)
     
-    return sorted(update_ids, reverse=True)
+    return sorted(update_ids, key=_update_id_sort_key, reverse=True)
 
 
 def _parse_severity(severity_str: Optional[str]) -> Severity:
@@ -275,11 +378,11 @@ def fetch_and_store_update(update_id: str, verbose: bool = False) -> dict:
     }
 
 
-def fetch_latest(count: int = 1, verbose: bool = False) -> list[dict]:
+def fetch_latest(count: int = 1, verbose: bool = False, prefer_rss: bool = True) -> list[dict]:
     if verbose:
         console.print("[cyan]Getting available updates...[/cyan]")
     
-    update_ids = get_update_ids()
+    update_ids = get_update_ids(prefer_rss=prefer_rss)
     update_ids = update_ids[:count]
     
     results = []

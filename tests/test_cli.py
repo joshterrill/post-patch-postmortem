@@ -11,7 +11,7 @@ from patch_tuesday.cli import (
     cli,
     print_header,
 )
-from patch_tuesday.models import CVE, Patch, Product, Severity
+from patch_tuesday.models import Architecture, CVE, Patch, Product, Severity, WinBIndexFile
 
 
 @pytest.fixture
@@ -57,6 +57,7 @@ class TestFetchCommand:
         assert result.exit_code == 0
         assert "--date" in result.output
         assert "--count" in result.output
+        assert "--source" in result.output
     
     def test_fetch_invalid_date(self, runner: CliRunner):
         """Test fetch with invalid date format."""
@@ -85,7 +86,7 @@ class TestFetchCommand:
                 result = runner.invoke(cli, ["fetch", "-d", "2024-01"])
         
         assert result.exit_code == 0
-        mock_fetch.assert_called_once_with(2024, 1, verbose=True)
+        mock_fetch.assert_called_once_with(2024, 1, verbose=False)
     
     def test_fetch_latest(self, runner: CliRunner):
         """Test fetch without date (latest)."""
@@ -96,7 +97,7 @@ class TestFetchCommand:
                 result = runner.invoke(cli, ["fetch", "-n", "1"])
         
         assert result.exit_code == 0
-        mock_fetch.assert_called_once_with(1, verbose=True)
+        mock_fetch.assert_called_once_with(1, verbose=False, prefer_rss=True)
 
 
 class TestUpdatesCommand:
@@ -127,7 +128,7 @@ class TestUpdatesCommand:
             result = runner.invoke(cli, ["updates", "-y", "2024"])
         
         assert result.exit_code == 0
-        mock_get.assert_called_with(2024)
+        mock_get.assert_called_with(2024, prefer_rss=True)
 
 
 class TestListCommand:
@@ -167,6 +168,7 @@ class TestListCommand:
         
         assert result.exit_code == 0
         assert "KB5034441" in result.output
+        assert sample_patch.release_date.strftime("%Y-%m-%d") in result.output
     
     def test_list_by_product(self, runner: CliRunner, sample_patch: Patch):
         """Test list filtered by product."""
@@ -383,6 +385,7 @@ class TestVersionsCommand:
         
         assert result.exit_code == 0
         assert "--arch" in result.output
+        assert "--limit" in result.output
     
     def test_versions_lookup(self, runner: CliRunner):
         """Test looking up file versions."""
@@ -391,6 +394,447 @@ class TestVersionsCommand:
         
         assert result.exit_code == 0
         mock_show.assert_called_once()
+
+    def test_versions_lookup_with_limit(self, runner: CliRunner):
+        """Test looking up file versions with explicit limit."""
+        with patch("patch_tuesday.cli.show_file_versions") as mock_show:
+            result = runner.invoke(cli, ["versions", "ntdll.dll", "-a", "x64", "--limit", "150"])
+
+        assert result.exit_code == 0
+        mock_show.assert_called_once_with("ntdll.dll", Architecture.X64, limit=150)
+
+
+class TestBinaryDiffCommand:
+    """Tests for binary-diff command."""
+    
+    def test_binary_diff_help(self, runner: CliRunner):
+        """Test binary-diff help output."""
+        result = runner.invoke(cli, ["binary-diff", "--help"])
+        
+        assert result.exit_code == 0
+        assert "--kb" in result.output
+        assert "--new-version" in result.output
+        assert "--old-version" in result.output
+        assert "--new-build" in result.output
+        assert "--old-build" in result.output
+        assert "--report" in result.output
+        assert "--pseudo-c" in result.output
+        assert "--overwrite" in result.output
+    
+    def test_binary_diff_list_only(self, runner: CliRunner):
+        """Test binary-diff list-only mode."""
+        versions = [
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.2",
+                architecture=Architecture.X64,
+                sha256="b" * 64,
+                download_url="https://example.com/new",
+            ),
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.1",
+                architecture=Architecture.X64,
+                sha256="a" * 64,
+                download_url="https://example.com/old",
+            ),
+        ]
+        
+        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
+            with patch("patch_tuesday.cli.show_file_versions") as mock_show:
+                result = runner.invoke(cli, ["binary-diff", "notepad.exe", "--list-only"])
+        
+        assert result.exit_code == 0
+        mock_show.assert_called_once()
+    
+    def test_binary_diff_no_versions(self, runner: CliRunner):
+        """Test binary-diff when no versions are available."""
+        with patch("patch_tuesday.cli.list_file_versions", return_value=[]):
+            result = runner.invoke(cli, ["binary-diff", "notepad.exe"])
+        
+        assert result.exit_code == 0
+        assert "No versions found" in result.output
+    
+    def test_binary_diff_runs_pipeline(self, runner: CliRunner, tmp_path: Path):
+        """Test end-to-end binary-diff pipeline with mocked dependencies."""
+        old_download = tmp_path / "old_notepad.exe"
+        new_download = tmp_path / "new_notepad.exe"
+        old_download.write_bytes(b"old")
+        new_download.write_bytes(b"new")
+        bindiff_file = tmp_path / "out.BinDiff"
+        bindiff_file.write_bytes(b"sqlite")
+        report_file = tmp_path / "out.html"
+        report_file.write_text("<html></html>")
+        
+        versions = [
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.2",
+                architecture=Architecture.X64,
+                sha256="b" * 64,
+                download_url="https://example.com/new",
+            ),
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.1",
+                architecture=Architecture.X64,
+                sha256="a" * 64,
+                download_url="https://example.com/old",
+            ),
+        ]
+        
+        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
+            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
+                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
+                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
+                                with patch("patch_tuesday.bindiff_client.export_bindiff_report", return_value=report_file):
+                                    mock_deps.return_value = {
+                                        "ghidra": (True, tmp_path / "ghidra"),
+                                        "bindiff": (True, tmp_path / "bindiff"),
+                                        "binexport": (True, tmp_path / "BinExport"),
+                                    }
+                                    result = runner.invoke(cli, ["binary-diff", "notepad.exe"])
+        
+        assert result.exit_code == 0
+        assert "Binary diff completed" in result.output
+
+    def test_binary_diff_report_auto_includes_pseudocode(self, runner: CliRunner, tmp_path: Path):
+        """Test --report automatically enables pseudo-C report generation."""
+        old_download = tmp_path / "old_notepad.exe"
+        new_download = tmp_path / "new_notepad.exe"
+        old_download.write_bytes(b"old")
+        new_download.write_bytes(b"new")
+        bindiff_file = tmp_path / "out.BinDiff"
+        bindiff_file.write_bytes(b"sqlite")
+        report_file = tmp_path / "out.html"
+        report_file.write_text("<html></html>")
+
+        versions = [
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.2",
+                architecture=Architecture.X64,
+                sha256="b" * 64,
+                download_url="https://example.com/new",
+            ),
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.1",
+                architecture=Architecture.X64,
+                sha256="a" * 64,
+                download_url="https://example.com/old",
+            ),
+        ]
+
+        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
+            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
+                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
+                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
+                                with patch("patch_tuesday.bindiff_client.export_bindiff_report", return_value=report_file) as mock_export_report:
+                                    mock_deps.return_value = {
+                                        "ghidra": (True, tmp_path / "ghidra"),
+                                        "bindiff": (True, tmp_path / "bindiff"),
+                                        "binexport": (True, tmp_path / "BinExport"),
+                                    }
+                                    result = runner.invoke(cli, ["binary-diff", "notepad.exe", "--report"])
+
+        assert result.exit_code == 0
+        assert "`--report` enabled" in result.output
+        assert mock_export_report.call_args.kwargs["include_pseudocode"] is True
+
+    def test_binary_diff_selects_newer_by_kb(self, runner: CliRunner, tmp_path: Path):
+        """Test selecting the patched side using --kb."""
+        old_download = tmp_path / "old_tcpip.sys"
+        new_download = tmp_path / "new_tcpip.sys"
+        old_download.write_bytes(b"old")
+        new_download.write_bytes(b"new")
+        bindiff_file = tmp_path / "out.BinDiff"
+        bindiff_file.write_bytes(b"sqlite")
+
+        newest_other = WinBIndexFile(
+            filename="tcpip.sys",
+            version="10.0.17763.7000",
+            architecture=Architecture.X64,
+            sha256="c" * 64,
+            download_url="https://example.com/newest",
+            updates=[{"kb_number": "KB9999999", "windows_version": "1809"}],
+        )
+        selected_kb = WinBIndexFile(
+            filename="tcpip.sys",
+            version="10.0.17763.6189",
+            architecture=Architecture.X64,
+            sha256="b" * 64,
+            download_url="https://example.com/selected",
+            updates=[{"kb_number": "KB5041578", "windows_version": "1809"}],
+        )
+        previous = WinBIndexFile(
+            filename="tcpip.sys",
+            version="10.0.17763.6050",
+            architecture=Architecture.X64,
+            sha256="a" * 64,
+            download_url="https://example.com/old",
+            updates=[{"kb_number": "KB5040000", "windows_version": "1809"}],
+        )
+
+        with patch("patch_tuesday.cli.list_file_versions", return_value=[newest_other, selected_kb, previous]):
+            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
+                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]) as mock_download:
+                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
+                                mock_deps.return_value = {
+                                    "ghidra": (True, tmp_path / "ghidra"),
+                                    "bindiff": (True, tmp_path / "bindiff"),
+                                    "binexport": (True, tmp_path / "BinExport"),
+                                }
+                                result = runner.invoke(cli, ["binary-diff", "tcpip.sys", "--kb", "KB5041578"])
+
+        assert result.exit_code == 0
+        assert "KB5041578" in result.output
+        first_call = mock_download.call_args_list[0].args[0]
+        second_call = mock_download.call_args_list[1].args[0]
+        assert first_call.version == "10.0.17763.6050"
+        assert second_call.version == "10.0.17763.6189"
+
+    def test_binary_diff_kb_prefers_same_windows_branch_for_previous(self, runner: CliRunner, tmp_path: Path):
+        """Test --kb prefers an older file from the same Windows branch."""
+        old_download = tmp_path / "old_tcpip.sys"
+        new_download = tmp_path / "new_tcpip.sys"
+        old_download.write_bytes(b"old")
+        new_download.write_bytes(b"new")
+        bindiff_file = tmp_path / "out.BinDiff"
+        bindiff_file.write_bytes(b"sqlite")
+
+        selected_kb = WinBIndexFile(
+            filename="tcpip.sys",
+            version="10.0.17763.6189",
+            architecture=Architecture.X64,
+            sha256="b" * 64,
+            download_url="https://example.com/selected",
+            updates=[{"kb_number": "KB5041578", "windows_version": "1809"}],
+        )
+        wrong_branch_previous = WinBIndexFile(
+            filename="tcpip.sys",
+            version="10.0.14393.7254",
+            architecture=Architecture.X64,
+            sha256="c" * 64,
+            download_url="https://example.com/wrong",
+            updates=[{"kb_number": "KB5041773", "windows_version": "1607"}],
+        )
+        same_branch_previous = WinBIndexFile(
+            filename="tcpip.sys",
+            version="10.0.17763.6050",
+            architecture=Architecture.X64,
+            sha256="a" * 64,
+            download_url="https://example.com/right",
+            updates=[{"kb_number": "KB5040000", "windows_version": "1809"}],
+        )
+
+        with patch(
+            "patch_tuesday.cli.list_file_versions",
+            return_value=[selected_kb, wrong_branch_previous, same_branch_previous],
+        ):
+            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
+                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]) as mock_download:
+                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
+                                mock_deps.return_value = {
+                                    "ghidra": (True, tmp_path / "ghidra"),
+                                    "bindiff": (True, tmp_path / "bindiff"),
+                                    "binexport": (True, tmp_path / "BinExport"),
+                                }
+                                result = runner.invoke(cli, ["binary-diff", "tcpip.sys", "--kb", "KB5041578"])
+
+        assert result.exit_code == 0
+        first_call = mock_download.call_args_list[0].args[0]
+        second_call = mock_download.call_args_list[1].args[0]
+        assert first_call.version == "10.0.17763.6050"
+        assert second_call.version == "10.0.17763.6189"
+    
+    def test_binary_diff_reuses_cached_exports_and_bindiff(self, runner: CliRunner, tmp_path: Path):
+        """Test binary-diff skips expensive steps when cached artifacts exist."""
+        old_download = tmp_path / "old_notepad.exe"
+        new_download = tmp_path / "new_notepad.exe"
+        old_download.write_bytes(b"old")
+        new_download.write_bytes(b"new")
+        
+        versions = [
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.2",
+                architecture=Architecture.X64,
+                sha256="b" * 64,
+                download_url="https://example.com/new",
+            ),
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.1",
+                architecture=Architecture.X64,
+                sha256="a" * 64,
+                download_url="https://example.com/old",
+            ),
+        ]
+        
+        bindiff_root = tmp_path / "bindiff-root"
+        exports_root = bindiff_root / "binary" / "notepad.exe" / "exports"
+        exports_root.mkdir(parents=True, exist_ok=True)
+        (exports_root / "11.0.1_old.BinExport").write_bytes(b"old-export")
+        (exports_root / "11.0.2_new.BinExport").write_bytes(b"new-export")
+        cached_bindiff = exports_root / "notepad_11.0.1_to_11.0.2.BinDiff"
+        cached_bindiff.write_bytes(b"sqlite")
+        
+        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
+            with patch("patch_tuesday.bindiff_client.DEFAULT_BINDIFF_DIR", bindiff_root):
+                with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
+                    with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                        with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
+                            with patch("patch_tuesday.bindiff_client.export_with_ghidra") as mock_export:
+                                with patch("patch_tuesday.bindiff_client.run_bindiff") as mock_run_bindiff:
+                                    mock_deps.return_value = {
+                                        "ghidra": (True, tmp_path / "ghidra"),
+                                        "bindiff": (True, tmp_path / "bindiff"),
+                                        "binexport": (True, tmp_path / "BinExport"),
+                                    }
+                                    result = runner.invoke(cli, ["binary-diff", "notepad.exe"])
+        
+        assert result.exit_code == 0
+        assert "Reusing existing export" in result.output
+        assert "Reusing existing BinDiff DB" in result.output
+        mock_export.assert_not_called()
+        mock_run_bindiff.assert_not_called()
+    
+    def test_binary_diff_overwrite_forces_regeneration(self, runner: CliRunner, tmp_path: Path):
+        """Test --overwrite forces rerun instead of using cached artifacts."""
+        old_download = tmp_path / "old_notepad.exe"
+        new_download = tmp_path / "new_notepad.exe"
+        old_download.write_bytes(b"old")
+        new_download.write_bytes(b"new")
+        
+        versions = [
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.2",
+                architecture=Architecture.X64,
+                sha256="b" * 64,
+                download_url="https://example.com/new",
+            ),
+            WinBIndexFile(
+                filename="notepad.exe",
+                version="11.0.1",
+                architecture=Architecture.X64,
+                sha256="a" * 64,
+                download_url="https://example.com/old",
+            ),
+        ]
+        
+        bindiff_root = tmp_path / "bindiff-root"
+        exports_root = bindiff_root / "binary" / "notepad.exe" / "exports"
+        reports_root = bindiff_root / "binary" / "notepad.exe" / "reports"
+        exports_root.mkdir(parents=True, exist_ok=True)
+        reports_root.mkdir(parents=True, exist_ok=True)
+        (exports_root / "11.0.1_old.BinExport").write_bytes(b"old-export")
+        (exports_root / "11.0.2_new.BinExport").write_bytes(b"new-export")
+        (exports_root / "notepad_11.0.1_to_11.0.2.BinDiff").write_bytes(b"sqlite-old")
+        report_file = reports_root / "notepad_11.0.1_to_11.0.2_report.html"
+        report_file.write_text("<html>old</html>")
+        
+        new_bindiff = tmp_path / "new.BinDiff"
+        new_bindiff.write_bytes(b"sqlite-new")
+        new_report = tmp_path / "new_report.html"
+        new_report.write_text("<html>new</html>")
+        
+        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
+            with patch("patch_tuesday.bindiff_client.DEFAULT_BINDIFF_DIR", bindiff_root):
+                with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
+                    with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                        with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
+                            with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True) as mock_export:
+                                with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=new_bindiff) as mock_run_bindiff:
+                                    with patch("patch_tuesday.bindiff_client.export_bindiff_report", return_value=new_report) as mock_export_report:
+                                        mock_deps.return_value = {
+                                            "ghidra": (True, tmp_path / "ghidra"),
+                                            "bindiff": (True, tmp_path / "bindiff"),
+                                            "binexport": (True, tmp_path / "BinExport"),
+                                        }
+                                        result = runner.invoke(cli, ["binary-diff", "notepad.exe", "--report", "--overwrite"])
+        
+        assert result.exit_code == 0
+        assert "Overwriting existing export" in result.output
+        assert "Overwriting existing BinDiff DB" in result.output
+        assert "Overwriting existing report" in result.output
+        assert mock_export.call_count == 2
+        mock_run_bindiff.assert_called_once()
+        mock_export_report.assert_called_once()
+
+
+class TestCveCommand:
+    """Tests for CVE workflow command."""
+    
+    def test_cve_help(self, runner: CliRunner):
+        """Test cve help output."""
+        result = runner.invoke(cli, ["cve", "--help"])
+        
+        assert result.exit_code == 0
+        assert "--fetch-count" in result.output
+        assert "--run-bindiff" in result.output
+        assert "--pseudo-c" in result.output
+    
+    def test_cve_invalid_format(self, runner: CliRunner):
+        """Test cve command rejects invalid IDs."""
+        with patch("patch_tuesday.cli.init_db"):
+            result = runner.invoke(cli, ["cve", "not-a-cve"])
+        
+        assert result.exit_code == 0
+        assert "Invalid CVE format" in result.output
+    
+    def test_cve_list_only(self, runner: CliRunner, sample_patch: Patch, sample_product: Product):
+        """Test cve --list-only resolves and lists KB mappings."""
+        with patch("patch_tuesday.cli.init_db"):
+            with patch("patch_tuesday.cli.get_db") as mock_db:
+                mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
+                mock_db.return_value.__exit__ = MagicMock(return_value=False)
+                with patch("patch_tuesday.cli.get_patches_for_cve", return_value=[sample_patch]):
+                    with patch("patch_tuesday.cli.get_products_for_patch", return_value=[sample_product]):
+                        result = runner.invoke(
+                            cli,
+                            ["cve", "CVE-2024-12345", "--list-only"],
+                            terminal_width=200,
+                        )
+        
+        assert result.exit_code == 0
+        assert "KB5034441" in result.output
+        assert "Release" in result.output
+        assert "Products" in result.output
+    
+    def test_cve_fetch_then_run_pipeline(
+        self,
+        runner: CliRunner,
+        sample_patch: Patch,
+        sample_product: Product,
+        tmp_path: Path,
+    ):
+        """Test cve command fetches updates if missing and runs pipeline."""
+        with patch("patch_tuesday.cli.init_db"):
+            with patch("patch_tuesday.cli.get_db") as mock_db:
+                mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
+                mock_db.return_value.__exit__ = MagicMock(return_value=False)
+                with patch("patch_tuesday.cli.get_patches_for_cve", side_effect=[[], [sample_patch]]):
+                    with patch("patch_tuesday.cli.get_products_for_patch", return_value=[sample_product]):
+                        with patch("patch_tuesday.cli.fetch_latest") as mock_fetch_latest:
+                            with patch("patch_tuesday.cli.download_by_kb", return_value=[]):
+                                with patch("patch_tuesday.cli.extract_by_kb", return_value=[MagicMock()]):
+                                    with patch("patch_tuesday.cli.fetch_baseline_for_extracted", return_value=[]):
+                                        with patch("patch_tuesday.cli.list_extracted_files", return_value=[]):
+                                            with patch("patch_tuesday.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
+                                                result = runner.invoke(cli, ["cve", "CVE-2024-12345"])
+        
+        assert result.exit_code == 0
+        mock_fetch_latest.assert_called_once_with(24, verbose=True, prefer_rss=True)
 
 
 class TestDiffCommand:
@@ -435,9 +879,21 @@ class TestBindiffCommand:
     def test_bindiff_help(self, runner: CliRunner):
         """Test bindiff help output."""
         result = runner.invoke(cli, ["bindiff", "--help"])
-        
+
         assert result.exit_code == 0
         assert "BinDiff" in result.output or "bindiff" in result.output.lower()
+        assert "--binary" in result.output
+        assert "--report" in result.output
+        assert "--pseudo-c" in result.output
+
+    def test_bindiff_report_auto_enables_pseudocode(self, runner: CliRunner, tmp_path: Path):
+        """Test bindiff --report auto-enables pseudo-C generation in automatic mode."""
+        with patch("patch_tuesday.bindiff_client.compare_binaries_for_kb", return_value=[] ) as mock_compare:
+            result = runner.invoke(cli, ["bindiff", "KB5034441", "--report"])
+
+        assert result.exit_code == 0
+        assert "`--report` enabled" in result.output
+        assert mock_compare.call_args.kwargs["include_pseudocode"] is True
     
     def test_bindiff_check_deps(self, runner: CliRunner):
         """Test bindiff --check-deps flag."""

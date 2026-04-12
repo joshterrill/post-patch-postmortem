@@ -15,11 +15,13 @@ from patch_tuesday.msrc_client import (
     _parse_release_date,
     _parse_severity,
     _severity_rank,
+    get_update_ids_from_rss,
     fetch_by_date,
     fetch_cvrf_document,
     fetch_latest,
     fetch_and_store_update,
     get_update_ids,
+    parse_update_ids_from_rss,
     parse_cvrf_document,
 )
 from patch_tuesday.models import Severity
@@ -215,7 +217,7 @@ class TestGetUpdateIds:
             )
         )
         
-        result = get_update_ids()
+        result = get_update_ids(prefer_rss=False)
         
         assert "2024-Feb" in result
         assert "2024-Jan" in result
@@ -237,7 +239,7 @@ class TestGetUpdateIds:
             )
         )
         
-        result = get_update_ids(year=2024)
+        result = get_update_ids(year=2024, prefer_rss=False)
         
         assert "2024-Jan" in result
         assert "2024-Feb" in result
@@ -250,8 +252,65 @@ class TestGetUpdateIds:
             return_value=httpx.Response(200, json={"value": []})
         )
         
-        result = get_update_ids()
+        result = get_update_ids(prefer_rss=False)
         assert result == []
+
+
+class TestRssUpdateIds:
+    """Tests for RSS-based update ID discovery."""
+    
+    def test_parse_update_ids_from_rss(self):
+        """Test parsing update IDs from RSS payload."""
+        rss_text = """
+        <rss version="2.0">
+          <channel>
+            <item>
+              <title>Security Update Guide - February 2026</title>
+              <link>https://msrc.microsoft.com/update-guide/releaseNote/2026-Feb</link>
+            </item>
+            <item>
+              <title>Security Update Guide - January 2026</title>
+              <description>Patch Tuesday 2026-Jan summary</description>
+            </item>
+          </channel>
+        </rss>
+        """
+        result = parse_update_ids_from_rss(rss_text)
+        
+        assert result == ["2026-Feb", "2026-Jan"]
+    
+    def test_parse_update_ids_from_rss_year_filter(self):
+        """Test RSS parsing with year filter."""
+        rss_text = """
+        <rss version="2.0">
+          <channel>
+            <item><title>Update 2026-Feb</title></item>
+            <item><title>Update 2025-Dec</title></item>
+          </channel>
+        </rss>
+        """
+        result = parse_update_ids_from_rss(rss_text, year=2026)
+        assert result == ["2026-Feb"]
+    
+    @respx.mock
+    def test_get_update_ids_from_rss(self):
+        """Test RSS update discovery fetches and parses feed."""
+        respx.get("https://api.msrc.microsoft.com/update-guide/rss").mock(
+            return_value=httpx.Response(
+                200,
+                text="""
+                <rss version="2.0">
+                  <channel>
+                    <item><link>https://msrc.microsoft.com/update-guide/releaseNote/2024-Feb</link></item>
+                    <item><link>https://msrc.microsoft.com/update-guide/releaseNote/2024-Jan</link></item>
+                  </channel>
+                </rss>
+                """,
+            )
+        )
+        
+        result = get_update_ids_from_rss()
+        assert result == ["2024-Feb", "2024-Jan"]
 
 
 class TestFetchCvrfDocument:
@@ -407,7 +466,7 @@ class TestFetchLatest:
         
         with patch.object(db_module, "DEFAULT_DB_PATH", temp_db_path):
             db_module.init_db(temp_db_path)
-            results = fetch_latest(count=1, verbose=False)
+            results = fetch_latest(count=1, verbose=False, prefer_rss=False)
         
         assert len(results) == 1
         assert results[0]["update_id"] == "2024-Jan"
@@ -428,7 +487,7 @@ class TestFetchLatest:
         
         with patch.object(db_module, "DEFAULT_DB_PATH", temp_db_path):
             db_module.init_db(temp_db_path)
-            results = fetch_latest(count=1, verbose=False)
+            results = fetch_latest(count=1, verbose=False, prefer_rss=False)
         
         # Should return empty list on error
         assert results == []
