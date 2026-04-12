@@ -32,10 +32,10 @@ test = [
 ]
 
 [project.scripts]
-ppp = "patch_tuesday.cli:cli"
+ppp = "ppp.cli:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/patch_tuesday"]
+packages = ["src/ppp"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -48,7 +48,7 @@ pythonpath = ["src"]
 addopts = "-v"
 
 [tool.coverage.run]
-source = ["src/patch_tuesday"]
+source = ["src/ppp"]
 branch = true
 omit = ["*/tests/*"]
 

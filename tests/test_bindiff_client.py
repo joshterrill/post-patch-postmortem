@@ -1,4 +1,4 @@
-"""Tests for patch_tuesday.bindiff_client module."""
+"""Tests for ppp.bindiff_client module."""
 
 import base64
 import json
@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from patch_tuesday.bindiff_client import (
+from ppp.bindiff_client import (
     check_dependencies,
     _export_report_from_db,
     _find_ghidra,

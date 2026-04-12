@@ -1,4 +1,4 @@
-"""Tests for patch_tuesday.database module."""
+"""Tests for ppp.database module."""
 
 from datetime import datetime
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from sqlite_utils import Database
 
-from patch_tuesday.database import (
+from ppp.database import (
     add_downloaded_file,
     get_all_products,
     get_cve,
@@ -29,7 +29,7 @@ from patch_tuesday.database import (
     upsert_patch,
     upsert_product,
 )
-from patch_tuesday.models import (
+from ppp.models import (
     Architecture,
     CVE,
     DownloadedFile,
@@ -50,7 +50,7 @@ class TestDatabasePath:
     
     def test_get_db_path_creates_parent_dir(self, tmp_path: Path, monkeypatch):
         """Test that get_db_path creates parent directory."""
-        import patch_tuesday.database as db_module
+        import ppp.database as db_module
         
         test_path = tmp_path / "subdir" / "patches.db"
         monkeypatch.setattr(db_module, "DEFAULT_DB_PATH", test_path)

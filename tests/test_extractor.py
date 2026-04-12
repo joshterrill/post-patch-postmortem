@@ -1,4 +1,4 @@
-"""Tests for patch_tuesday.extractor module."""
+"""Tests for ppp.extractor module."""
 
 import shutil
 import subprocess
@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from patch_tuesday.extractor import (
+from ppp.extractor import (
     BINARY_EXTENSIONS,
     _calculate_sha256,
     _detect_architecture_from_path,
@@ -21,7 +21,7 @@ from patch_tuesday.extractor import (
     get_extraction_stats,
     list_extracted_files,
 )
-from patch_tuesday.models import Architecture
+from ppp.models import Architecture
 
 
 class TestBinaryExtensions:
@@ -165,7 +165,7 @@ class TestExtractCab:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0)
             with patch.object(
-                __import__("patch_tuesday.extractor", fromlist=["_get_cab_extractor"]),
+                __import__("ppp.extractor", fromlist=["_get_cab_extractor"]),
                 "_get_cab_extractor",
                 return_value=("cabextract", ["-q"]),
             ):
@@ -181,7 +181,7 @@ class TestExtractCab:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1)
             with patch.object(
-                __import__("patch_tuesday.extractor", fromlist=["_get_cab_extractor"]),
+                __import__("ppp.extractor", fromlist=["_get_cab_extractor"]),
                 "_get_cab_extractor",
                 return_value=("cabextract", ["-q"]),
             ):
@@ -196,7 +196,7 @@ class TestExtractCab:
         
         with patch("subprocess.run", side_effect=Exception("Test error")):
             with patch.object(
-                __import__("patch_tuesday.extractor", fromlist=["_get_cab_extractor"]),
+                __import__("ppp.extractor", fromlist=["_get_cab_extractor"]),
                 "_get_cab_extractor",
                 return_value=("cabextract", ["-q"]),
             ):
@@ -244,7 +244,7 @@ class TestExtractPackage:
         package.write_bytes(b"fake cab content")
         
         with patch.object(
-            __import__("patch_tuesday.extractor", fromlist=["_extract_cab"]),
+            __import__("ppp.extractor", fromlist=["_extract_cab"]),
             "_extract_cab",
             return_value=True,
         ):
@@ -259,7 +259,7 @@ class TestExtractPackage:
         package.write_bytes(b"fake content")
         
         with patch.object(
-            __import__("patch_tuesday.extractor", fromlist=["_extract_cab"]),
+            __import__("ppp.extractor", fromlist=["_extract_cab"]),
             "_extract_cab",
             return_value=True,
         ):
@@ -284,7 +284,7 @@ class TestExtractByKb:
         package.write_bytes(b"fake")
         
         with patch.object(
-            __import__("patch_tuesday.extractor", fromlist=["extract_package"]),
+            __import__("ppp.extractor", fromlist=["extract_package"]),
             "extract_package",
             return_value=[],
         ):

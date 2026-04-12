@@ -1,11 +1,11 @@
-"""Tests for patch_tuesday.models module."""
+"""Tests for ppp.models module."""
 
 from datetime import datetime
 
 import pytest
 from pydantic import ValidationError
 
-from patch_tuesday.models import (
+from ppp.models import (
     Architecture,
     CatalogEntry,
     CVE,

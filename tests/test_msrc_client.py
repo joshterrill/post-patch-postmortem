@@ -1,4 +1,4 @@
-"""Tests for patch_tuesday.msrc_client module."""
+"""Tests for ppp.msrc_client module."""
 
 from datetime import datetime
 from pathlib import Path
@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from patch_tuesday.msrc_client import (
+from ppp.msrc_client import (
     _extract_kb_numbers,
     _extract_version,
     _is_windows_product,
@@ -24,7 +24,7 @@ from patch_tuesday.msrc_client import (
     parse_update_ids_from_rss,
     parse_cvrf_document,
 )
-from patch_tuesday.models import Severity
+from ppp.models import Severity
 
 
 class TestParseSeverity:
@@ -425,8 +425,8 @@ class TestFetchAndStoreUpdate:
             return_value=httpx.Response(200, json=sample_cvrf_document)
         )
         
-        import patch_tuesday.database as db_module
-        import patch_tuesday.msrc_client as msrc_module
+        import ppp.database as db_module
+        import ppp.msrc_client as msrc_module
         
         # Patch the database path
         with patch.object(db_module, "DEFAULT_DB_PATH", temp_db_path):
@@ -462,7 +462,7 @@ class TestFetchLatest:
             return_value=httpx.Response(200, json=sample_cvrf_document)
         )
         
-        import patch_tuesday.database as db_module
+        import ppp.database as db_module
         
         with patch.object(db_module, "DEFAULT_DB_PATH", temp_db_path):
             db_module.init_db(temp_db_path)
@@ -483,7 +483,7 @@ class TestFetchLatest:
             return_value=httpx.Response(500)
         )
         
-        import patch_tuesday.database as db_module
+        import ppp.database as db_module
         
         with patch.object(db_module, "DEFAULT_DB_PATH", temp_db_path):
             db_module.init_db(temp_db_path)
@@ -503,7 +503,7 @@ class TestFetchByDate:
             return_value=httpx.Response(200, json=sample_cvrf_document)
         )
         
-        import patch_tuesday.database as db_module
+        import ppp.database as db_module
         
         with patch.object(db_module, "DEFAULT_DB_PATH", temp_db_path):
             db_module.init_db(temp_db_path)
@@ -519,7 +519,7 @@ class TestFetchByDate:
             return_value=httpx.Response(404)
         )
         
-        import patch_tuesday.database as db_module
+        import ppp.database as db_module
         
         with patch.object(db_module, "DEFAULT_DB_PATH", temp_db_path):
             db_module.init_db(temp_db_path)

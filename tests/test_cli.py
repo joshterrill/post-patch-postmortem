@@ -1,4 +1,4 @@
-"""Tests for patch_tuesday.cli module."""
+"""Tests for ppp.cli module."""
 
 from datetime import datetime
 from pathlib import Path
@@ -7,11 +7,11 @@ from unittest.mock import patch, MagicMock
 import pytest
 from click.testing import CliRunner
 
-from patch_tuesday.cli import (
+from ppp.cli import (
     cli,
     print_header,
 )
-from patch_tuesday.models import Architecture, CVE, Patch, Product, Severity, WinBIndexFile
+from ppp.models import Architecture, CVE, Patch, Product, Severity, WinBIndexFile
 
 
 @pytest.fixture
@@ -77,7 +77,7 @@ class TestSimplifiedCommands:
 
     def test_lookup_file_delegates_to_show_versions(self, runner: CliRunner):
         """Test lookup file delegates to Winbindex listing."""
-        with patch("patch_tuesday.cli.show_file_versions") as mock_show:
+        with patch("ppp.cli.show_file_versions") as mock_show:
             result = runner.invoke(cli, ["lookup", "file", "tcpip.sys", "-a", "x64", "--limit", "150"])
 
         assert result.exit_code == 0
@@ -85,7 +85,7 @@ class TestSimplifiedCommands:
 
     def test_analyze_file_delegates_to_binary_diff(self, runner: CliRunner):
         """Test analyze file uses the simplified binary workflow."""
-        with patch("patch_tuesday.cli._run_binary_diff") as mock_binary_diff:
+        with patch("ppp.cli._run_binary_diff") as mock_binary_diff:
             result = runner.invoke(cli, ["analyze", "file", "tcpip.sys", "-a", "x64", "--kb", "KB5041578", "-l"])
 
         assert result.exit_code == 0
@@ -108,9 +108,9 @@ class TestSimplifiedCommands:
 
     def test_analyze_kb_runs_pipeline(self, runner: CliRunner):
         """Test analyze kb uses the end-to-end KB pipeline."""
-        with patch("patch_tuesday.cli.print_header"):
-            with patch("patch_tuesday.cli.init_db"):
-                with patch("patch_tuesday.cli._run_kb_pipeline") as mock_pipeline:
+        with patch("ppp.cli.print_header"):
+            with patch("ppp.cli.init_db"):
+                with patch("ppp.cli._run_kb_pipeline") as mock_pipeline:
                     result = runner.invoke(cli, ["analyze", "kb", "KB5041578", "-a", "x64"])
 
         assert result.exit_code == 0
@@ -149,8 +149,8 @@ class TestFetchCommand:
     
     def test_fetch_by_date(self, runner: CliRunner, temp_db_path: Path):
         """Test fetch with date parameter."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.fetch_by_date") as mock_fetch:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.fetch_by_date") as mock_fetch:
                 mock_fetch.return_value = {
                     "update_id": "2024-Jan",
                     "patches": 10,
@@ -165,8 +165,8 @@ class TestFetchCommand:
     
     def test_fetch_latest(self, runner: CliRunner):
         """Test fetch without date (latest)."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.fetch_latest") as mock_fetch:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.fetch_latest") as mock_fetch:
                 mock_fetch.return_value = [{"update_id": "2024-Jan", "patches": 10, "cves": 100}]
                 
                 result = runner.invoke(cli, ["fetch", "-n", "1"])
@@ -187,7 +187,7 @@ class TestUpdatesCommand:
     
     def test_updates_list(self, runner: CliRunner):
         """Test listing available updates."""
-        with patch("patch_tuesday.cli.get_update_ids") as mock_get:
+        with patch("ppp.cli.get_update_ids") as mock_get:
             mock_get.return_value = ["2024-Jan", "2024-Feb", "2023-Dec"]
             
             result = runner.invoke(cli, ["updates"])
@@ -197,7 +197,7 @@ class TestUpdatesCommand:
     
     def test_updates_filter_year(self, runner: CliRunner):
         """Test listing updates filtered by year."""
-        with patch("patch_tuesday.cli.get_update_ids") as mock_get:
+        with patch("ppp.cli.get_update_ids") as mock_get:
             mock_get.return_value = ["2024-Jan", "2024-Feb"]
             
             result = runner.invoke(cli, ["updates", "-y", "2024"])
@@ -220,12 +220,12 @@ class TestListCommand:
     
     def test_list_no_patches(self, runner: CliRunner):
         """Test list with no patches in database."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
                 
-                with patch("patch_tuesday.cli.get_patches_by_date", return_value=[]):
+                with patch("ppp.cli.get_patches_by_date", return_value=[]):
                     result = runner.invoke(cli, ["list"])
         
         assert result.exit_code == 0
@@ -233,12 +233,12 @@ class TestListCommand:
     
     def test_list_with_patches(self, runner: CliRunner, sample_patch: Patch):
         """Test list with patches."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
                 
-                with patch("patch_tuesday.cli.get_patches_by_date", return_value=[sample_patch]):
+                with patch("ppp.cli.get_patches_by_date", return_value=[sample_patch]):
                     result = runner.invoke(cli, ["list"])
         
         assert result.exit_code == 0
@@ -247,20 +247,20 @@ class TestListCommand:
     
     def test_list_by_product(self, runner: CliRunner, sample_patch: Patch):
         """Test list filtered by product."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
                 
-                with patch("patch_tuesday.cli.get_patches_by_product", return_value=[sample_patch]):
+                with patch("ppp.cli.get_patches_by_product", return_value=[sample_patch]):
                     result = runner.invoke(cli, ["list", "-p", "Windows 11"])
         
         assert result.exit_code == 0
     
     def test_list_invalid_date(self, runner: CliRunner):
         """Test list with invalid date."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
                 
@@ -281,12 +281,12 @@ class TestShowCommand:
     
     def test_show_patch_not_found(self, runner: CliRunner):
         """Test showing non-existent patch."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
                 
-                with patch("patch_tuesday.cli.get_patch", return_value=None):
+                with patch("ppp.cli.get_patch", return_value=None):
                     result = runner.invoke(cli, ["show", "KB9999999"])
         
         assert result.exit_code == 0
@@ -303,12 +303,12 @@ class TestShowCommand:
         sample_patch.products = [sample_product]
         sample_patch.cves = [sample_cve]
         
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
                 
-                with patch("patch_tuesday.cli.get_patch", return_value=sample_patch):
+                with patch("ppp.cli.get_patch", return_value=sample_patch):
                     result = runner.invoke(cli, ["show", "KB5034441"])
         
         assert result.exit_code == 0
@@ -322,12 +322,12 @@ class TestStatsCommand:
     
     def test_stats(self, runner: CliRunner):
         """Test stats command."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
                 
-                with patch("patch_tuesday.cli.get_stats") as mock_stats:
+                with patch("ppp.cli.get_stats") as mock_stats:
                     mock_stats.return_value = {
                         "patches": 10,
                         "products": 5,
@@ -356,7 +356,7 @@ class TestDownloadCommand:
     
     def test_download_list_only(self, runner: CliRunner):
         """Test download with list-only flag."""
-        with patch("patch_tuesday.cli.list_catalog_entries") as mock_list:
+        with patch("ppp.cli.list_catalog_entries") as mock_list:
             result = runner.invoke(cli, ["download", "KB5034441", "-l"])
         
         assert result.exit_code == 0
@@ -364,7 +364,7 @@ class TestDownloadCommand:
     
     def test_download_packages(self, runner: CliRunner, tmp_path: Path):
         """Test downloading packages."""
-        with patch("patch_tuesday.cli.download_by_kb") as mock_download:
+        with patch("ppp.cli.download_by_kb") as mock_download:
             mock_download.return_value = [tmp_path / "test.msu"]
             
             result = runner.invoke(cli, ["download", "KB5034441"])
@@ -385,8 +385,8 @@ class TestExtractCommand:
     
     def test_extract_no_packages(self, runner: CliRunner):
         """Test extract with no packages found."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.extract_by_kb", return_value=[]):
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.extract_by_kb", return_value=[]):
                 result = runner.invoke(cli, ["extract", "KB9999999"])
         
         assert result.exit_code == 0
@@ -394,14 +394,14 @@ class TestExtractCommand:
     
     def test_extract_with_save(self, runner: CliRunner, sample_downloaded_file):
         """Test extract with database save."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.extract_by_kb", return_value=[sample_downloaded_file]):
-                with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.extract_by_kb", return_value=[sample_downloaded_file]):
+                with patch("ppp.cli.get_db") as mock_db:
                     mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                     mock_db.return_value.__exit__ = MagicMock(return_value=False)
                     
-                    with patch("patch_tuesday.cli.add_downloaded_file"):
-                        with patch("patch_tuesday.cli.get_extraction_stats") as mock_stats:
+                    with patch("ppp.cli.add_downloaded_file"):
+                        with patch("ppp.cli.get_extraction_stats") as mock_stats:
                             mock_stats.return_value = {"total": 1, "by_arch": {"x64": 1}, "by_type": {".dll": 1}}
                             
                             result = runner.invoke(cli, ["extract", "KB5034441", "-s"])
@@ -414,7 +414,7 @@ class TestFilesCommand:
     
     def test_files_no_files(self, runner: CliRunner):
         """Test files command with no extracted files."""
-        with patch("patch_tuesday.cli.list_extracted_files", return_value=[]):
+        with patch("ppp.cli.list_extracted_files", return_value=[]):
             result = runner.invoke(cli, ["files", "KB9999999"])
         
         assert result.exit_code == 0
@@ -425,7 +425,7 @@ class TestFilesCommand:
         test_file = tmp_path / "test.dll"
         test_file.write_bytes(b"test content")
         
-        with patch("patch_tuesday.cli.list_extracted_files", return_value=[test_file]):
+        with patch("ppp.cli.list_extracted_files", return_value=[test_file]):
             result = runner.invoke(cli, ["files", "KB5034441"])
         
         assert result.exit_code == 0
@@ -443,8 +443,8 @@ class TestBaselineCommand:
     
     def test_baseline_no_extracted(self, runner: CliRunner, tmp_path: Path):
         """Test baseline with no extracted files."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
                 result = runner.invoke(cli, ["baseline", "KB9999999"])
         
         assert result.exit_code == 0
@@ -464,7 +464,7 @@ class TestVersionsCommand:
     
     def test_versions_lookup(self, runner: CliRunner):
         """Test looking up file versions."""
-        with patch("patch_tuesday.cli.show_file_versions") as mock_show:
+        with patch("ppp.cli.show_file_versions") as mock_show:
             result = runner.invoke(cli, ["versions", "ntdll.dll"])
         
         assert result.exit_code == 0
@@ -472,7 +472,7 @@ class TestVersionsCommand:
 
     def test_versions_lookup_with_limit(self, runner: CliRunner):
         """Test looking up file versions with explicit limit."""
-        with patch("patch_tuesday.cli.show_file_versions") as mock_show:
+        with patch("ppp.cli.show_file_versions") as mock_show:
             result = runner.invoke(cli, ["versions", "ntdll.dll", "-a", "x64", "--limit", "150"])
 
         assert result.exit_code == 0
@@ -515,8 +515,8 @@ class TestBinaryDiffCommand:
             ),
         ]
         
-        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
-            with patch("patch_tuesday.cli.show_file_versions") as mock_show:
+        with patch("ppp.cli.list_file_versions", return_value=versions):
+            with patch("ppp.cli.show_file_versions") as mock_show:
                 result = runner.invoke(cli, ["binary-diff", "notepad.exe", "--list-only"])
         
         assert result.exit_code == 0
@@ -524,7 +524,7 @@ class TestBinaryDiffCommand:
     
     def test_binary_diff_no_versions(self, runner: CliRunner):
         """Test binary-diff when no versions are available."""
-        with patch("patch_tuesday.cli.list_file_versions", return_value=[]):
+        with patch("ppp.cli.list_file_versions", return_value=[]):
             result = runner.invoke(cli, ["binary-diff", "notepad.exe"])
         
         assert result.exit_code == 0
@@ -558,13 +558,13 @@ class TestBinaryDiffCommand:
             ),
         ]
         
-        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
-            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
-                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
-                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
-                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
-                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
-                                with patch("patch_tuesday.bindiff_client.export_bindiff_report", return_value=report_file):
+        with patch("ppp.cli.list_file_versions", return_value=versions):
+            with patch("ppp.bindiff_client.check_dependencies") as mock_deps:
+                with patch("ppp.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("ppp.cli.download_file_version", side_effect=[old_download, new_download]):
+                        with patch("ppp.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("ppp.bindiff_client.run_bindiff", return_value=bindiff_file):
+                                with patch("ppp.bindiff_client.export_bindiff_report", return_value=report_file):
                                     mock_deps.return_value = {
                                         "ghidra": (True, tmp_path / "ghidra"),
                                         "bindiff": (True, tmp_path / "bindiff"),
@@ -603,13 +603,13 @@ class TestBinaryDiffCommand:
             ),
         ]
 
-        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
-            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
-                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
-                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
-                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
-                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
-                                with patch("patch_tuesday.bindiff_client.export_bindiff_report", return_value=report_file) as mock_export_report:
+        with patch("ppp.cli.list_file_versions", return_value=versions):
+            with patch("ppp.bindiff_client.check_dependencies") as mock_deps:
+                with patch("ppp.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("ppp.cli.download_file_version", side_effect=[old_download, new_download]):
+                        with patch("ppp.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("ppp.bindiff_client.run_bindiff", return_value=bindiff_file):
+                                with patch("ppp.bindiff_client.export_bindiff_report", return_value=report_file) as mock_export_report:
                                     mock_deps.return_value = {
                                         "ghidra": (True, tmp_path / "ghidra"),
                                         "bindiff": (True, tmp_path / "bindiff"),
@@ -655,12 +655,12 @@ class TestBinaryDiffCommand:
             updates=[{"kb_number": "KB5040000", "windows_version": "1809"}],
         )
 
-        with patch("patch_tuesday.cli.list_file_versions", return_value=[newest_other, selected_kb, previous]):
-            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
-                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
-                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]) as mock_download:
-                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
-                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
+        with patch("ppp.cli.list_file_versions", return_value=[newest_other, selected_kb, previous]):
+            with patch("ppp.bindiff_client.check_dependencies") as mock_deps:
+                with patch("ppp.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("ppp.cli.download_file_version", side_effect=[old_download, new_download]) as mock_download:
+                        with patch("ppp.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("ppp.bindiff_client.run_bindiff", return_value=bindiff_file):
                                 mock_deps.return_value = {
                                     "ghidra": (True, tmp_path / "ghidra"),
                                     "bindiff": (True, tmp_path / "bindiff"),
@@ -710,14 +710,14 @@ class TestBinaryDiffCommand:
         )
 
         with patch(
-            "patch_tuesday.cli.list_file_versions",
+            "ppp.cli.list_file_versions",
             return_value=[selected_kb, wrong_branch_previous, same_branch_previous],
         ):
-            with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
-                with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
-                    with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]) as mock_download:
-                        with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True):
-                            with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=bindiff_file):
+            with patch("ppp.bindiff_client.check_dependencies") as mock_deps:
+                with patch("ppp.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                    with patch("ppp.cli.download_file_version", side_effect=[old_download, new_download]) as mock_download:
+                        with patch("ppp.bindiff_client.export_with_ghidra", return_value=True):
+                            with patch("ppp.bindiff_client.run_bindiff", return_value=bindiff_file):
                                 mock_deps.return_value = {
                                     "ghidra": (True, tmp_path / "ghidra"),
                                     "bindiff": (True, tmp_path / "bindiff"),
@@ -763,13 +763,13 @@ class TestBinaryDiffCommand:
         cached_bindiff = exports_root / "notepad_11.0.1_to_11.0.2.BinDiff"
         cached_bindiff.write_bytes(b"sqlite")
         
-        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
-            with patch("patch_tuesday.bindiff_client.DEFAULT_BINDIFF_DIR", bindiff_root):
-                with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
-                    with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
-                        with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
-                            with patch("patch_tuesday.bindiff_client.export_with_ghidra") as mock_export:
-                                with patch("patch_tuesday.bindiff_client.run_bindiff") as mock_run_bindiff:
+        with patch("ppp.cli.list_file_versions", return_value=versions):
+            with patch("ppp.bindiff_client.DEFAULT_BINDIFF_DIR", bindiff_root):
+                with patch("ppp.bindiff_client.check_dependencies") as mock_deps:
+                    with patch("ppp.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                        with patch("ppp.cli.download_file_version", side_effect=[old_download, new_download]):
+                            with patch("ppp.bindiff_client.export_with_ghidra") as mock_export:
+                                with patch("ppp.bindiff_client.run_bindiff") as mock_run_bindiff:
                                     mock_deps.return_value = {
                                         "ghidra": (True, tmp_path / "ghidra"),
                                         "bindiff": (True, tmp_path / "bindiff"),
@@ -823,14 +823,14 @@ class TestBinaryDiffCommand:
         new_report = tmp_path / "new_report.html"
         new_report.write_text("<html>new</html>")
         
-        with patch("patch_tuesday.cli.list_file_versions", return_value=versions):
-            with patch("patch_tuesday.bindiff_client.DEFAULT_BINDIFF_DIR", bindiff_root):
-                with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_deps:
-                    with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
-                        with patch("patch_tuesday.cli.download_file_version", side_effect=[old_download, new_download]):
-                            with patch("patch_tuesday.bindiff_client.export_with_ghidra", return_value=True) as mock_export:
-                                with patch("patch_tuesday.bindiff_client.run_bindiff", return_value=new_bindiff) as mock_run_bindiff:
-                                    with patch("patch_tuesday.bindiff_client.export_bindiff_report", return_value=new_report) as mock_export_report:
+        with patch("ppp.cli.list_file_versions", return_value=versions):
+            with patch("ppp.bindiff_client.DEFAULT_BINDIFF_DIR", bindiff_root):
+                with patch("ppp.bindiff_client.check_dependencies") as mock_deps:
+                    with patch("ppp.bindiff_client._find_binexport_extension", return_value=tmp_path / "BinExport"):
+                        with patch("ppp.cli.download_file_version", side_effect=[old_download, new_download]):
+                            with patch("ppp.bindiff_client.export_with_ghidra", return_value=True) as mock_export:
+                                with patch("ppp.bindiff_client.run_bindiff", return_value=new_bindiff) as mock_run_bindiff:
+                                    with patch("ppp.bindiff_client.export_bindiff_report", return_value=new_report) as mock_export_report:
                                         mock_deps.return_value = {
                                             "ghidra": (True, tmp_path / "ghidra"),
                                             "bindiff": (True, tmp_path / "bindiff"),
@@ -861,7 +861,7 @@ class TestCveCommand:
     
     def test_cve_invalid_format(self, runner: CliRunner):
         """Test cve command rejects invalid IDs."""
-        with patch("patch_tuesday.cli.init_db"):
+        with patch("ppp.cli.init_db"):
             result = runner.invoke(cli, ["cve", "not-a-cve"])
         
         assert result.exit_code == 0
@@ -869,12 +869,12 @@ class TestCveCommand:
     
     def test_cve_list_only(self, runner: CliRunner, sample_patch: Patch, sample_product: Product):
         """Test cve --list-only resolves and lists KB mappings."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
-                with patch("patch_tuesday.cli.get_patches_for_cve", return_value=[sample_patch]):
-                    with patch("patch_tuesday.cli.get_products_for_patch", return_value=[sample_product]):
+                with patch("ppp.cli.get_patches_for_cve", return_value=[sample_patch]):
+                    with patch("ppp.cli.get_products_for_patch", return_value=[sample_product]):
                         result = runner.invoke(
                             cli,
                             ["cve", "CVE-2024-12345", "--list-only"],
@@ -894,18 +894,18 @@ class TestCveCommand:
         tmp_path: Path,
     ):
         """Test cve command fetches updates if missing and runs pipeline."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.get_db") as mock_db:
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.get_db") as mock_db:
                 mock_db.return_value.__enter__ = MagicMock(return_value=MagicMock())
                 mock_db.return_value.__exit__ = MagicMock(return_value=False)
-                with patch("patch_tuesday.cli.get_patches_for_cve", side_effect=[[], [sample_patch]]):
-                    with patch("patch_tuesday.cli.get_products_for_patch", return_value=[sample_product]):
-                        with patch("patch_tuesday.cli.fetch_latest") as mock_fetch_latest:
-                            with patch("patch_tuesday.cli.download_by_kb", return_value=[]):
-                                with patch("patch_tuesday.cli.extract_by_kb", return_value=[MagicMock()]):
-                                    with patch("patch_tuesday.cli.fetch_baseline_for_extracted", return_value=[]):
-                                        with patch("patch_tuesday.cli.list_extracted_files", return_value=[]):
-                                            with patch("patch_tuesday.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
+                with patch("ppp.cli.get_patches_for_cve", side_effect=[[], [sample_patch]]):
+                    with patch("ppp.cli.get_products_for_patch", return_value=[sample_product]):
+                        with patch("ppp.cli.fetch_latest") as mock_fetch_latest:
+                            with patch("ppp.cli.download_by_kb", return_value=[]):
+                                with patch("ppp.cli.extract_by_kb", return_value=[MagicMock()]):
+                                    with patch("ppp.cli.fetch_baseline_for_extracted", return_value=[]):
+                                        with patch("ppp.cli.list_extracted_files", return_value=[]):
+                                            with patch("ppp.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
                                                 result = runner.invoke(cli, ["cve", "CVE-2024-12345"])
         
         assert result.exit_code == 0
@@ -923,8 +923,8 @@ class TestDiffCommand:
     
     def test_diff_no_extracted(self, runner: CliRunner, tmp_path: Path):
         """Test diff with no extracted files."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
                 result = runner.invoke(cli, ["diff", "KB9999999"])
         
         assert result.exit_code == 0
@@ -938,10 +938,10 @@ class TestDiffCommand:
         test_file = x64_dir / "test.dll"
         test_file.write_bytes(b"content")
         
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
-                with patch("patch_tuesday.cli.DEFAULT_BASELINE_DIR", tmp_path / "baseline"):
-                    with patch("patch_tuesday.cli.list_extracted_files", return_value=[test_file]):
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
+                with patch("ppp.cli.DEFAULT_BASELINE_DIR", tmp_path / "baseline"):
+                    with patch("ppp.cli.list_extracted_files", return_value=[test_file]):
                         result = runner.invoke(cli, ["diff", "KB5034441"])
         
         assert result.exit_code == 0
@@ -963,7 +963,7 @@ class TestBindiffCommand:
 
     def test_bindiff_report_auto_enables_pseudocode(self, runner: CliRunner, tmp_path: Path):
         """Test bindiff --report auto-enables pseudo-C generation in automatic mode."""
-        with patch("patch_tuesday.bindiff_client.compare_binaries_for_kb", return_value=[] ) as mock_compare:
+        with patch("ppp.bindiff_client.compare_binaries_for_kb", return_value=[] ) as mock_compare:
             result = runner.invoke(cli, ["bindiff", "KB5034441", "--report"])
 
         assert result.exit_code == 0
@@ -972,8 +972,8 @@ class TestBindiffCommand:
     
     def test_bindiff_check_deps(self, runner: CliRunner):
         """Test bindiff --check-deps flag."""
-        with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_check:
-            with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=None):
+        with patch("ppp.bindiff_client.check_dependencies") as mock_check:
+            with patch("ppp.bindiff_client._find_binexport_extension", return_value=None):
                 mock_check.return_value = {
                     "ghidra": (False, None),
                     "bindiff": (False, None),
@@ -994,8 +994,8 @@ class TestBindiffCommand:
     
     def test_bindiff_no_extracted_files(self, runner: CliRunner, tmp_path: Path):
         """Test bindiff when no extracted files exist."""
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
                 result = runner.invoke(cli, ["bindiff", "KB9999999"])
         
         assert result.exit_code == 0
@@ -1011,17 +1011,17 @@ class TestBindiffCommand:
         
         baseline_dir = tmp_path / "baseline"
         
-        with patch("patch_tuesday.cli.init_db"):
-            with patch("patch_tuesday.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
-                with patch("patch_tuesday.cli.DEFAULT_BASELINE_DIR", baseline_dir):
+        with patch("ppp.cli.init_db"):
+            with patch("ppp.cli.DEFAULT_EXTRACTED_DIR", tmp_path):
+                with patch("ppp.cli.DEFAULT_BASELINE_DIR", baseline_dir):
                     result = runner.invoke(cli, ["bindiff", "KB5034441"])
         
         assert result.exit_code == 0
     
     def test_bindiff_deps_found(self, runner: CliRunner):
         """Test bindiff --check-deps when tools are found."""
-        with patch("patch_tuesday.bindiff_client.check_dependencies") as mock_check:
-            with patch("patch_tuesday.bindiff_client._find_binexport_extension", return_value=Path("/opt/ghidra/Extensions/BinExport")):
+        with patch("ppp.bindiff_client.check_dependencies") as mock_check:
+            with patch("ppp.bindiff_client._find_binexport_extension", return_value=Path("/opt/ghidra/Extensions/BinExport")):
                 mock_check.return_value = {
                     "ghidra": (True, Path("/opt/ghidra")),
                     "bindiff": (True, Path("/usr/local/bin/bindiff")),

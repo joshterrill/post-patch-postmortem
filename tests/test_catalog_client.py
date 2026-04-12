@@ -1,4 +1,4 @@
-"""Tests for patch_tuesday.catalog_client module."""
+"""Tests for ppp.catalog_client module."""
 
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -8,7 +8,7 @@ import httpx
 import pytest
 import respx
 
-from patch_tuesday.catalog_client import (
+from ppp.catalog_client import (
     _calculate_sha256,
     _detect_architecture,
     download_by_kb,
@@ -17,7 +17,7 @@ from patch_tuesday.catalog_client import (
     list_catalog_entries,
     search_catalog,
 )
-from patch_tuesday.models import Architecture, CatalogEntry
+from ppp.models import Architecture, CatalogEntry
 
 
 class TestDetectArchitecture:

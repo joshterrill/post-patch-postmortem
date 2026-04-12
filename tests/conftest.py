@@ -5,8 +5,8 @@ from typing import Generator
 import pytest
 from sqlite_utils import Database
 
-from patch_tuesday.database import init_db, get_db
-from patch_tuesday.models import (
+from ppp.database import init_db, get_db
+from ppp.models import (
     Architecture,
     CatalogEntry,
     CVE,

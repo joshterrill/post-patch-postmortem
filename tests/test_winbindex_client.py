@@ -1,4 +1,4 @@
-"""Tests for patch_tuesday.winbindex_client module."""
+"""Tests for ppp.winbindex_client module."""
 
 import gzip
 import json
@@ -9,7 +9,7 @@ import httpx
 import pytest
 import respx
 
-from patch_tuesday.winbindex_client import (
+from ppp.winbindex_client import (
     _build_symbol_server_urls,
     _calculate_sha256,
     _clean_filename,
@@ -25,7 +25,7 @@ from patch_tuesday.winbindex_client import (
     list_file_versions,
     show_file_versions,
 )
-from patch_tuesday.models import Architecture, WinBIndexFile
+from ppp.models import Architecture, WinBIndexFile
 
 
 class TestParseArchitecture:
@@ -738,7 +738,7 @@ class TestShowFileVersions:
     def test_show_file_versions_displays_kbs(self, capsys):
         """Test KB/update metadata is rendered in the table."""
         with patch(
-            "patch_tuesday.winbindex_client.list_file_versions",
+            "ppp.winbindex_client.list_file_versions",
             return_value=[
                 WinBIndexFile(
                     filename="tcpip.sys",
