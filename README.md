@@ -1,11 +1,24 @@
-# Patch Tuesday Analyzer
+# Post-patch Postmortem
 
-CLI for Microsoft Patch Tuesday research:
-- Fetch MSRC patch/CVE metadata
-- Download and extract update packages
-- Pull pre-patch binaries from Winbindex
-- Diff pre/post binaries with BinDiff
-- Generate HTML reports (including optional Ghidra pseudo-C unified diffs)
+`ppp` is a CLI tool that allows you to analyze Microsoft Patch Tuesday updates. It provides a way of downloading binaries from an update or KB, diffing them with the previous version, and generating a BinDiff file and HTML report with pseudo-code diffing and function matching statistics.
+
+*Shout out to [Winbindex](https://winbindex.m417z.com/) for making it easy to find and download specific versions of Windows binaries.*
+
+The main root commands are:
+
+- `fetch`: load Patch Tuesday metadata from MSRC
+- `list`: list KBs for a month
+- `show`: inspect one KB
+- `lookup`: look up KBs for a CVE or history for a binary
+- `analyze`: generate BinDiff artifacts for a month, KB, CVE, or file
+- `clean`: clear local state
+
+The supported entry points are:
+
+- entire Patch Tuesday month
+- specific KB
+- specific binary
+- optional CVE lookup to discover KBs first
 
 ## Installation
 
@@ -13,343 +26,164 @@ CLI for Microsoft Patch Tuesday research:
 pip install -e .
 ```
 
-Recommended system dependencies:
-- `cabextract` (for extracting `.cab`/`.msu` contents on macOS/Linux)
-  - macOS: `brew install cabextract`
-  - Debian/Ubuntu: `sudo apt install cabextract`
+Required / recommended external tools:
 
-BinDiff pipeline dependencies:
+- `cabextract` for extracting `.cab` / `.msu` packages on macOS or Linux
 - [Ghidra](https://ghidra-sre.org/)
 - [BinExport Ghidra extension](https://github.com/google/binexport/releases)
 - [BinDiff](https://github.com/google/bindiff/releases)
 
 Optional environment variables:
-- `GHIDRA_HOME` (path to Ghidra install)
-- `BINDIFF_HOME` (path to BinDiff install root)
+
+- `GHIDRA_HOME`
+- `BINDIFF_HOME`
 
 ## Quick Start
 
-1. Fetch latest Patch Tuesday metadata:
+Fetch one month of metadata:
 
 ```bash
-patch-tuesday fetch
-patch-tuesday updates
-patch-tuesday list -d 2026-02
+ppp fetch -d 2024-08
+ppp list -d 2024-08
 ```
 
-2. Full KB workflow (download -> extract -> baseline -> compare):
+Analyze one KB:
 
 ```bash
-patch-tuesday download KB5034441
-patch-tuesday extract KB5034441
-patch-tuesday baseline KB5034441
-patch-tuesday bindiff KB5034441 --report
+ppp analyze kb KB5041578
 ```
 
-3. Binary-targeted diff directly from Winbindex:
+Analyze one binary from Winbindex:
 
 ```bash
-patch-tuesday versions notepad.exe -a x64
-patch-tuesday binary-diff notepad.exe --new-date 2026-02-10 --old-date 2025-12-01 --report
+ppp lookup file tcpip.sys -a x64 --limit 150
+ppp analyze file tcpip.sys -a x64 --kb KB5041578
 ```
 
-4. Include decompiled pseudo-C git-style diffs in report:
+Analyze an entire Patch Tuesday month:
 
 ```bash
-patch-tuesday binary-diff notepad.exe --new-date 2026-02-10 --old-date 2025-12-01 --pseudo-c
+ppp analyze month 2024-08
 ```
 
-## Command Reference
-
-### `fetch`
-Fetch Patch Tuesday data from MSRC.
+Resolve a CVE to KBs, then analyze:
 
 ```bash
-patch-tuesday fetch [OPTIONS]
+ppp lookup cve CVE-2024-38063
+ppp analyze cve CVE-2024-38063
 ```
 
-Options:
-- `-d, --date TEXT` specific month (`YYYY-MM`)
-- `-n, --count INTEGER` number of recent updates (default: `1`)
-- `-v, --verbose` verbose output
-- `--source [rss|api]` source for latest update IDs (default: `rss`)
+## Main Workflows
 
-Examples:
-```bash
-patch-tuesday fetch
-patch-tuesday fetch -n 3
-patch-tuesday fetch -d 2026-02
-patch-tuesday fetch --source api
-```
+### 1. Entire Patch Tuesday Month
 
-### `updates`
-List available update IDs.
+Use this when you want all KBs in a month processed end to end.
 
 ```bash
-patch-tuesday updates [OPTIONS]
+ppp fetch -d 2024-08
+ppp list -d 2024-08
+ppp analyze month 2024-08
 ```
 
-Options:
-- `-y, --year INTEGER`
-- `--source [rss|api]` (default: `rss`)
+### 2. Specific KB
 
-### `list`
-List patches in local DB.
+Use this when you already know the KB you want.
 
 ```bash
-patch-tuesday list [OPTIONS]
+ppp show KB5041578
+ppp analyze kb KB5041578
 ```
 
-Options:
-- `-d, --date TEXT` month filter (`YYYY-MM`)
-- `-p, --product TEXT` product substring
-- `-s, --severity [critical|important|moderate|low]`
+This workflow:
 
-### `show`
-Show details for one KB.
+- downloads update packages when available
+- extracts patched binaries
+- fetches the most recent previous version for each matched binary
+- generates BinExport files with Ghidra
+- generates `.BinDiff` databases and HTML reports
+
+### 3. Specific Binary
+
+Use this when you care about one file rather than the whole KB.
+
+List file history first:
 
 ```bash
-patch-tuesday show KB_NUMBER
+ppp lookup file tcpip.sys -a x64 --limit 150
 ```
 
-### `stats`
-Show DB statistics.
+Then analyze that file:
 
 ```bash
-patch-tuesday stats
+ppp analyze file tcpip.sys -a x64 --kb KB5041578
 ```
 
-### `download`
-Download update packages from Microsoft Update Catalog.
+Useful variant:
+
+- omit `--kb` to compare the latest version against the most recent previous distinct version
+
+Preview the selected pair without running Ghidra / BinDiff:
 
 ```bash
-patch-tuesday download KB_NUMBER [OPTIONS]
+ppp analyze file tcpip.sys -a x64 --kb KB5041578 -l
 ```
 
-Options:
-- `-a, --arch [x64|x86|arm64]`
-- `-l, --list-only`
+### 4. CVE First
 
-### `extract`
-Extract binaries from downloaded packages.
+Use this when you start with a CVE and need to discover KBs first.
 
 ```bash
-patch-tuesday extract KB_NUMBER [OPTIONS]
+ppp lookup cve CVE-2024-38063
+ppp analyze cve CVE-2024-38063
 ```
 
-Options:
-- `-s, --save-db` save extracted file metadata to DB
-
-### `files`
-List extracted files for a KB.
+If the CVE is missing locally:
 
 ```bash
-patch-tuesday files KB_NUMBER
+ppp lookup cve CVE-2024-38063 --fetch-count 24
 ```
 
-### `baseline`
-Fetch pre-patch versions for extracted binaries (Winbindex).
+## Output
+
+Artifacts are written under `downloads/`.
+
+Common paths:
+
+- file workflow: `downloads/bindiff/binary/<file>/`
+- KB workflow: `downloads/bindiff/KBxxxxxxx/`
+- month workflow: one KB directory per analyzed patch
+
+Important outputs:
+
+- `.BinDiff` files: open in BinDiff
+- `.html` reports: open in a browser
+
+## Command Summary
+
+Top-level help:
 
 ```bash
-patch-tuesday baseline KB_NUMBER
+ppp --help
 ```
 
-### `diff`
-Show changed files with pre/post paths.
+Lookup help:
 
 ```bash
-patch-tuesday diff KB_NUMBER
+ppp lookup --help
 ```
 
-### `versions`
-List available Winbindex versions for a binary.
+Analyze help:
 
 ```bash
-patch-tuesday versions FILENAME [OPTIONS]
-```
-
-Options:
-- `-a, --arch [x64|x86|arm64]`
-
-### `binary-diff`
-Directly compare two versions of one binary from Winbindex.
-
-```bash
-patch-tuesday binary-diff FILENAME [OPTIONS]
-```
-
-Options:
-- `-a, --arch [x64|x86|arm64]` (default: `x64`)
-- `--new-version TEXT`
-- `--old-version TEXT`
-- `--new-build TEXT`
-- `--old-build TEXT`
-- `--new-date TEXT` (`YYYY-MM-DD`)
-- `--old-date TEXT` (`YYYY-MM-DD`)
-- `--limit INTEGER` Winbindex entries to inspect (default: `200`)
-- `-l, --list-only` show selected pair only
-- `--report` generate HTML report
-- `--pseudo-c` include Ghidra pseudo-C unified diffs in report (implies `--report`)
-- `--overwrite` force regeneration of cached exports/BinDiff/report for the selected pair
-
-Cache behavior:
-- Reuses existing downloaded binaries if already present.
-- Reuses existing `.BinExport` files for the selected old/new pair.
-- Reuses existing pair-specific `.BinDiff` database and HTML report when present.
-- Use `--overwrite` to regenerate those artifacts on rerun.
-
-Examples:
-```bash
-patch-tuesday binary-diff notepad.exe
-patch-tuesday binary-diff notepad.exe -a x64 --list-only
-patch-tuesday binary-diff notepad.exe --new-version "11.2501.31.0" --old-version "11.2312.18.0"
-patch-tuesday binary-diff notepad.exe --new-date 2026-02-10 --old-date 2025-12-01 --report
-patch-tuesday binary-diff notepad.exe --new-date 2026-02-10 --old-date 2025-12-01 --pseudo-c
-```
-
-### `cve`
-Resolve CVE -> KBs and run pipeline.
-
-```bash
-patch-tuesday cve CVE_ID [OPTIONS]
-```
-
-Options:
-- `-a, --arch [x64|x86|arm64]` catalog architecture filter
-- `--fetch-count INTEGER` fallback fetch window when CVE not in DB (default: `24`)
-- `-l, --list-only` resolve/list KBs only
-- `--run-bindiff` run BinDiff stage after baseline
-- `--report` generate reports for created BinDiff DBs
-- `--pseudo-c` include Ghidra pseudo-C unified diffs in reports (implies `--report`)
-- `-s, --save-db` persist extracted/baseline records
-
-Examples:
-```bash
-patch-tuesday cve CVE-2026-20841 -l
-patch-tuesday cve CVE-2026-20841 --run-bindiff --report
-patch-tuesday cve CVE-2026-20841 --run-bindiff --pseudo-c
-```
-
-### `bindiff`
-Compare pre/post binaries for a KB.
-
-```bash
-patch-tuesday bindiff KB_NUMBER [OPTIONS]
-```
-
-Options:
-- `--check-deps` dependency check (Ghidra/BinDiff/BinExport)
-- `--manual` print manual BinExport workflow
-- `--run-diff` run BinDiff on existing `.BinExport` files
-- `-b, --binary TEXT` restrict to one binary base name
-- `--report` generate report(s)
-- `--pseudo-c` include Ghidra pseudo-C unified diffs in report(s) (implies `--report`)
-
-Examples:
-```bash
-patch-tuesday bindiff KB5034441 --check-deps
-patch-tuesday bindiff KB5034441
-patch-tuesday bindiff KB5034441 -b notepad.exe --report
-patch-tuesday bindiff KB5034441 -b notepad.exe --pseudo-c
-patch-tuesday bindiff KB5034441 --manual
-patch-tuesday bindiff KB5034441 --run-diff --report
-```
-
-Note:
-- `--pseudo-c` in `bindiff --run-diff` mode is ignored because only `.BinExport` files are available there, not original binaries.
-
-### `clean`
-Clear local DB/cache.
-
-```bash
-patch-tuesday clean [OPTIONS]
-```
-
-Options:
-- `--db` clear DB
-- `--cache` clear downloaded data
-- `--all` clear DB + cache
-- `-f, --force` no prompt
-
-## End-to-End Workflows
-
-### Workflow A: Patch Tuesday Month -> Binary Diff
-
-```bash
-patch-tuesday fetch -d 2026-02
-patch-tuesday list -d 2026-02
-patch-tuesday show KBxxxxxxx
-patch-tuesday download KBxxxxxxx -a x64
-patch-tuesday extract KBxxxxxxx
-patch-tuesday baseline KBxxxxxxx
-patch-tuesday diff KBxxxxxxx
-patch-tuesday bindiff KBxxxxxxx -b notepad.exe --pseudo-c
-```
-
-### Workflow B: CVE -> KB -> BinDiff Report
-
-```bash
-patch-tuesday cve CVE-2026-20841 --run-bindiff --pseudo-c
-```
-
-This does:
-1. Resolve CVE to one or more KBs
-2. Download packages
-3. Extract patched binaries
-4. Fetch baseline binaries
-5. Run BinDiff
-6. Write HTML report(s), including optional pseudo-C unified diffs
-
-### Workflow C: Single Binary Across Releases (Winbindex)
-
-```bash
-patch-tuesday versions notepad.exe -a x64
-patch-tuesday binary-diff notepad.exe --new-date 2026-02-10 --old-date 2025-12-01 --pseudo-c
-```
-
-## Reports and Output Paths
-
-Default output root:
-- `downloads/bindiff/`
-
-Typical paths:
-- Binary-diff flow:
-  - Downloads: `downloads/bindiff/binary/<binary>/downloads/`
-  - BinExport: `downloads/bindiff/binary/<binary>/exports/`
-  - HTML report: `downloads/bindiff/binary/<binary>/reports/`
-- KB flow:
-  - BinDiff DBs: `downloads/bindiff/KBxxxxxxx/exports/`
-  - Reports: `downloads/bindiff/KBxxxxxxx/reports/`
-
-Report behavior:
-- Matched-functions table supports click-sort on every column.
-- Matched-functions table includes all matched rows and renders via shadow-DOM pagination (30 rows/page), so sorting is global across the full dataset.
-- With `--pseudo-c`, each matched row has a `View` action that opens a modal showing:
-  - Function-level pseudo-C unified diff (`---/+++`)
-  - One-hop call-graph context (callers/callees on primary and secondary sides)
-  - Jump actions to open related rows/diffs from that context
-- Pseudo-C is generated for all matched rows whose similarity is below 100%.
-
-## Local Data Layout
-
-```text
-data/patches.db
-downloads/packages/
-downloads/extracted/
-downloads/baseline/
-downloads/bindiff/
+ppp analyze --help
 ```
 
 ## Troubleshooting
 
-- "No KB mappings found for CVE":
-  - Run `patch-tuesday fetch -d YYYY-MM`, then retry.
-- "No baseline files found":
-  - Run `patch-tuesday baseline KBxxxxxxx`.
-- BinDiff dependencies missing:
-  - Run `patch-tuesday bindiff KBxxxxxxx --check-deps`.
-- Pseudo-C section missing in report:
-  - Ensure `--pseudo-c` is used and Ghidra decompilation succeeds for selected matched functions.
+- No KBs for a CVE:
+  `ppp fetch -d YYYY-MM`, then retry `lookup cve`
+- No package download for a KB:
+  prefer the file workflow through `lookup file` and `analyze file`
 
 ## License
 

@@ -1,6 +1,3 @@
-"""Pytest fixtures for Patch Tuesday Analyzer tests."""
-
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Generator

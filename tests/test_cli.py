@@ -37,7 +37,14 @@ class TestCliGroup:
         result = runner.invoke(cli, ["--help"])
         
         assert result.exit_code == 0
-        assert "Patch Tuesday Analyzer" in result.output
+        assert "analyze" in result.output
+        assert "lookup" in result.output
+        assert "fetch" in result.output
+        assert "list" in result.output
+        assert "show" in result.output
+        assert "binary-diff" not in result.output
+        assert "bindiff" not in result.output
+        assert "versions" not in result.output
     
     def test_cli_version(self, runner: CliRunner):
         """Test CLI version output."""
@@ -45,6 +52,74 @@ class TestCliGroup:
         
         assert result.exit_code == 0
         assert "0.1.0" in result.output
+
+    def test_lookup_help(self, runner: CliRunner):
+        """Test lookup group help output."""
+        result = runner.invoke(cli, ["lookup", "--help"])
+
+        assert result.exit_code == 0
+        assert "file" in result.output
+        assert "cve" in result.output
+
+    def test_analyze_help(self, runner: CliRunner):
+        """Test analyze group help output."""
+        result = runner.invoke(cli, ["analyze", "--help"])
+
+        assert result.exit_code == 0
+        assert "file" in result.output
+        assert "kb" in result.output
+        assert "month" in result.output
+        assert "cve" in result.output
+
+
+class TestSimplifiedCommands:
+    """Tests for the simplified lookup/analyze front door."""
+
+    def test_lookup_file_delegates_to_show_versions(self, runner: CliRunner):
+        """Test lookup file delegates to Winbindex listing."""
+        with patch("patch_tuesday.cli.show_file_versions") as mock_show:
+            result = runner.invoke(cli, ["lookup", "file", "tcpip.sys", "-a", "x64", "--limit", "150"])
+
+        assert result.exit_code == 0
+        mock_show.assert_called_once_with("tcpip.sys", Architecture.X64, limit=150)
+
+    def test_analyze_file_delegates_to_binary_diff(self, runner: CliRunner):
+        """Test analyze file uses the simplified binary workflow."""
+        with patch("patch_tuesday.cli._run_binary_diff") as mock_binary_diff:
+            result = runner.invoke(cli, ["analyze", "file", "tcpip.sys", "-a", "x64", "--kb", "KB5041578", "-l"])
+
+        assert result.exit_code == 0
+        mock_binary_diff.assert_called_once_with(
+            filename="tcpip.sys",
+            arch="x64",
+            kb="KB5041578",
+            new_version=None,
+            old_version=None,
+            new_build=None,
+            old_build=None,
+            new_date=None,
+            old_date=None,
+            limit=200,
+            list_only=True,
+            report=False,
+            pseudo_c=False,
+            overwrite=False,
+        )
+
+    def test_analyze_kb_runs_pipeline(self, runner: CliRunner):
+        """Test analyze kb uses the end-to-end KB pipeline."""
+        with patch("patch_tuesday.cli.print_header"):
+            with patch("patch_tuesday.cli.init_db"):
+                with patch("patch_tuesday.cli._run_kb_pipeline") as mock_pipeline:
+                    result = runner.invoke(cli, ["analyze", "kb", "KB5041578", "-a", "x64"])
+
+        assert result.exit_code == 0
+        mock_pipeline.assert_called_once_with(
+            "KB5041578",
+            architecture=Architecture.X64,
+            save_db=False,
+            report=True,
+        )
 
 
 class TestFetchCommand:

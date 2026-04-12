@@ -1409,7 +1409,7 @@ def compare_binaries_for_kb(
         return []
     if not kb_baseline.exists():
         console.print(f"[yellow]No baseline files found for {kb}[/yellow]")
-        console.print(f"[dim]Run: patch-tuesday baseline {kb}[/dim]")
+        console.print(f"[dim]Run: ppp baseline {kb}[/dim]")
         return []
     deps = check_dependencies()
     ghidra_found, ghidra_path = deps["ghidra"]

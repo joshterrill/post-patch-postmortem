@@ -32,7 +32,7 @@ test = [
 ]
 
 [project.scripts]
-patch-tuesday = "patch_tuesday.cli:cli"
+ppp = "patch_tuesday.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/patch_tuesday"]
