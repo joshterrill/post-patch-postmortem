@@ -23,7 +23,6 @@ from ppp.winbindex_client import (
     find_previous_version,
     get_file_info,
     list_file_versions,
-    show_file_versions,
 )
 from ppp.models import Architecture, WinBIndexFile
 
@@ -702,64 +701,3 @@ class TestFetchBaselineForExtracted:
         
         # No baselines found due to 404, but should not error
         assert isinstance(result, list)
-
-
-class TestShowFileVersions:
-    """Tests for show_file_versions function."""
-    
-    @respx.mock
-    def test_show_file_versions(self, capsys):
-        """Test showing file versions."""
-        file_data = {
-            "hash1": {
-                "fileInfo": {"version": "10.0.1", "machineType": 34404, "sha256": "abc", "timestamp": 1234567890, "virtualSize": 1000000},
-                "windowsVersions": {},
-            },
-        }
-        compressed = gzip.compress(json.dumps(file_data).encode())
-        
-        respx.get(
-            "https://winbindex.m417z.com/data/by_filename_compressed/test.dll.json.gz"
-        ).mock(return_value=httpx.Response(200, content=compressed))
-        
-        # Should not raise
-        show_file_versions("test.dll")
-    
-    @respx.mock
-    def test_show_file_versions_not_found(self, capsys):
-        """Test showing versions for non-existent file."""
-        respx.get(
-            "https://winbindex.m417z.com/data/by_filename_compressed/nonexistent.dll.json.gz"
-        ).mock(return_value=httpx.Response(404))
-        
-        # Should not raise
-        show_file_versions("nonexistent.dll")
-
-    def test_show_file_versions_displays_kbs(self, capsys):
-        """Test KB/update metadata is rendered in the table."""
-        with patch(
-            "ppp.winbindex_client.list_file_versions",
-            return_value=[
-                WinBIndexFile(
-                    filename="tcpip.sys",
-                    version="10.0.17763.6189",
-                    architecture=Architecture.X64,
-                    sha256="a" * 64,
-                    download_url="https://example.com/tcpip.sys",
-                    size=2927600,
-                    updates=[
-                        {
-                            "kb_number": "KB5041578",
-                            "windows_version": "1809",
-                            "release_version": "17763.6189",
-                            "update_url": "https://support.microsoft.com/help/5041578",
-                        }
-                    ],
-                )
-            ],
-        ):
-            show_file_versions("tcpip.sys")
-
-        captured = capsys.readouterr()
-        assert "KBs" in captured.out
-        assert "2.79 MB" in captured.out

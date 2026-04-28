@@ -14,7 +14,6 @@ from ppp.catalog_client import (
     download_by_kb,
     download_update,
     get_download_url,
-    list_catalog_entries,
     search_catalog,
 )
 from ppp.models import Architecture, CatalogEntry
@@ -325,30 +324,3 @@ class TestDownloadByKb:
         
         # May return empty if no downloads succeed, but shouldn't error
         assert isinstance(results, list)
-
-
-class TestListCatalogEntries:
-    """Tests for list_catalog_entries function."""
-    
-    @respx.mock
-    def test_list_catalog_entries(self, sample_catalog_html: str, capsys):
-        """Test listing catalog entries."""
-        respx.get("https://www.catalog.update.microsoft.com/Search.aspx").mock(
-            return_value=httpx.Response(200, text=sample_catalog_html)
-        )
-        
-        # This function prints to console via rich
-        list_catalog_entries("KB5034441")
-        
-        # Should complete without error
-    
-    @respx.mock
-    def test_list_catalog_entries_no_results(self, capsys):
-        """Test listing when no entries found."""
-        respx.get("https://www.catalog.update.microsoft.com/Search.aspx").mock(
-            return_value=httpx.Response(200, text="<html></html>")
-        )
-        
-        list_catalog_entries("KB9999999")
-        
-        # Should complete without error

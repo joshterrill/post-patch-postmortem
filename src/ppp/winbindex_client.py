@@ -17,7 +17,6 @@ from rich.progress import (
     TimeRemainingColumn,
     TransferSpeedColumn,
 )
-from rich.table import Table
 
 from .models import Architecture, DownloadedFile, WinBIndexFile, WinBIndexUpdate
 
@@ -585,48 +584,3 @@ def fetch_baseline_for_extracted(
             )
             downloaded.append(record)
     return downloaded
-
-
-def show_file_versions(
-    filename: str,
-    architecture: Optional[Architecture] = None,
-    limit: int = 20,
-) -> None:
-    versions = list_file_versions(filename, architecture, limit=limit)
-    if not versions:
-        console.print(f"[yellow]No versions found for {filename}[/yellow]")
-        return
-    table = Table(title=f"Available versions of {filename}")
-    table.add_column("KBs", style="yellow", max_width=14)
-    table.add_column("Version", style="cyan")
-    table.add_column("Release Date", style="magenta", width=12)
-    table.add_column("Windows", style="blue", max_width=16)
-    table.add_column("Architecture", style="green")
-    table.add_column("Size", style="white", justify="right")
-    table.add_column("SHA256", style="dim", max_width=16)
-    
-    for v in versions:
-        release_date = v.release_date.strftime("%Y-%m-%d") if v.release_date else "N/A"
-        kb_values = sorted({item.kb_number for item in v.updates if item.kb_number})
-        kb_text = ", ".join(kb_values[:2]) if kb_values else "N/A"
-        if len(kb_values) > 2:
-            kb_text += f" +{len(kb_values) - 2}"
-        windows_values = sorted({item.windows_version for item in v.updates if item.windows_version})
-        windows_text = ", ".join(windows_values[:2]) if windows_values else "N/A"
-        if len(windows_values) > 2:
-            windows_text += f" +{len(windows_values) - 2}"
-        size_value = v.size or 0
-        size_text = "N/A"
-        if size_value > 0:
-            size_text = f"{size_value / 1024:.1f} KB" if size_value < 1024 * 1024 else f"{size_value / 1024 / 1024:.2f} MB"
-        table.add_row(
-            kb_text,
-            v.version,
-            release_date,
-            windows_text,
-            v.architecture.value,
-            size_text,
-            v.sha256[:16] + "..." if len(v.sha256) > 16 else v.sha256,
-        )
-    
-    console.print(table)

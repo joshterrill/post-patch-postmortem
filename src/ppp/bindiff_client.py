@@ -621,9 +621,6 @@ def _build_pseudocode_diffs(
                 n=3,
             )
         )
-        truncated = len(diff_lines) > 400
-        if truncated:
-            diff_lines = diff_lines[:400]
         diff_text = "\n".join(diff_lines)
         if not diff_text:
             diff_text = "(No pseudo-C textual changes in decompiler output)"
@@ -636,7 +633,7 @@ def _build_pseudocode_diffs(
                 "sim": sim,
                 "conf": conf,
                 "diff_text": diff_text,
-                "truncated": truncated,
+                "truncated": False,
                 "old_callers": old_item.get("callers", []),
                 "old_callees": old_item.get("callees", []),
                 "new_callers": new_item.get("callers", []),
@@ -1348,7 +1345,7 @@ def _generate_html_report(
           meta.innerHTML = `Primary: <code>0x${addr1.toString(16)}</code> | Secondary: <code>0x${addr2.toString(16)}</code> | Similarity: ${(Number(row.sim) || 0).toLocaleString(undefined, { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 })} | Confidence: ${(Number(row.conf) || 0).toLocaleString(undefined, { style: 'percent', minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
           if (info && info.diff_text) {
             diff.innerHTML = this.formatDiff(info.diff_text);
-            truncated.textContent = info.truncated ? 'Diff truncated to first 400 lines.' : '';
+            truncated.textContent = '';
           } else {
             diff.innerHTML = '<span class="diff-line">Pseudo-C diff not generated for this row.</span>';
             truncated.textContent = '';

@@ -5,7 +5,6 @@ import re
 import time
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -227,29 +226,3 @@ def download_by_kb(
             downloaded.append(path)
     
     return downloaded
-
-
-def list_catalog_entries(kb_number: str) -> None:
-    from rich.table import Table
-    entries = search_catalog(kb_number)
-    if not entries:
-        console.print(f"[yellow]No entries found for {kb_number}[/yellow]")
-        return
-    
-    table = Table(title=f"Update Catalog Results for {kb_number}")
-    table.add_column("Title", style="cyan", max_width=60)
-    table.add_column("Products", style="green", max_width=30)
-    table.add_column("Classification", style="yellow")
-    table.add_column("Size", style="magenta")
-    
-    for entry in entries:
-        arch = _detect_architecture(entry.title)
-        arch_str = f" [{arch.value}]" if arch else ""
-        table.add_row(
-            entry.title[:60] + ("..." if len(entry.title) > 60 else "") + arch_str,
-            entry.products[:30] + ("..." if len(entry.products) > 30 else ""),
-            entry.classification,
-            entry.size,
-        )
-    
-    console.print(table)
