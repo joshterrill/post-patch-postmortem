@@ -19,6 +19,7 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
+from .config import PACKAGES_DIR as DEFAULT_DOWNLOAD_DIR
 from .models import Architecture, CatalogEntry
 
 console = Console()
@@ -26,7 +27,6 @@ console = Console()
 CATALOG_BASE = "https://www.catalog.update.microsoft.com"
 CATALOG_SEARCH = f"{CATALOG_BASE}/Search.aspx"
 CATALOG_DOWNLOAD = f"{CATALOG_BASE}/DownloadDialog.aspx"
-DEFAULT_DOWNLOAD_DIR = Path(__file__).parent.parent.parent / "downloads" / "packages"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

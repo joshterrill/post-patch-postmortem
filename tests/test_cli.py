@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from ppp.cli import (
+    _format_sha256,
     _format_windows,
     cli,
     print_header,
@@ -76,6 +77,10 @@ class TestListCommand:
 
         assert _format_windows(entry) == "1809 (Windows 10 1809)"
 
+    def test_sha256_is_middle_truncated_for_display(self) -> None:
+        assert _format_sha256("abcdef" + ("1" * 52) + "123456") == "abcdef...123456"
+        assert _format_sha256("abc123") == "abc123"
+
     def test_windows_version_filter_matches_raw_and_humanized_values(self) -> None:
         entry = WinBIndexFile(
             filename="tcpip.sys",
@@ -96,7 +101,7 @@ class TestListCommand:
                 filename="tcpip.sys",
                 version="10.0.19041.1",
                 architecture=Architecture.X64,
-                sha256="a" * 64,
+                sha256="abcdef" + ("1" * 52) + "123456",
                 download_url="https://example.com/a",
                 size=1024,
                 updates=[{"kb_number": "KB5041578", "windows_version": "Windows 10 22H2"}],
@@ -118,6 +123,8 @@ class TestListCommand:
         assert result.exit_code == 0
         mock_versions.assert_called_once_with("tcpip.sys", architecture=Architecture.X64, limit=10)
         assert "Recent versions of tcpip.sys" in result.output
+        assert "abcdef...123456" in result.output
+        assert "abcdef" + ("1" * 52) + "123456" not in result.output
 
     def test_list_binary_filters_by_window_version(self, runner: CliRunner) -> None:
         versions = [

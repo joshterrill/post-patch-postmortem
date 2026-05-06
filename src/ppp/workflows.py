@@ -12,15 +12,16 @@ from rich.table import Table
 
 from . import __version__
 from .catalog_client import download_by_kb
+from .config import BASELINE_DIR as DEFAULT_BASELINE_DIR
+from .config import BINDIFF_DIR as DEFAULT_BINDIFF_DIR
+from .config import EXTRACTED_DIR as DEFAULT_EXTRACTED_DIR
+from .config import PACKAGES_DIR as DEFAULT_PACKAGES_DIR
 from .extractor import (
-    DEFAULT_EXTRACTED_DIR,
-    DEFAULT_PACKAGES_DIR,
     extract_by_kb,
     list_extracted_files,
 )
 from .models import Architecture, WinBIndexFile
 from .winbindex_client import (
-    DEFAULT_BASELINE_DIR,
     download_file_version,
     fetch_baseline_for_extracted,
     list_file_versions,
@@ -140,7 +141,7 @@ def run_kb_diff(
     force: bool = False,
     window_version: Optional[str] = None,
 ):
-    from .bindiff_client import DEFAULT_BINDIFF_DIR, compare_binaries_for_kb, show_comparison_summary
+    from .bindiff_client import compare_binaries_for_kb, show_comparison_summary
 
     kb = normalize_kb_number(kb_number)
     console.print(f"\n[bold cyan]Processing {kb}[/bold cyan]")
@@ -228,7 +229,6 @@ def run_binary_diff(
     report: bool = True,
 ) -> None:
     from .bindiff_client import (
-        DEFAULT_BINDIFF_DIR,
         _find_binexport_extension,
         check_dependencies,
         export_bindiff_report,

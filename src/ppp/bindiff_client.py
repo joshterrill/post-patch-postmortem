@@ -16,11 +16,11 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-console = Console()
+from .config import BASELINE_DIR as DEFAULT_BASELINE_DIR
+from .config import BINDIFF_DIR as DEFAULT_BINDIFF_DIR
+from .config import EXTRACTED_DIR as DEFAULT_EXTRACTED_DIR
 
-DEFAULT_EXTRACTED_DIR = Path(__file__).parent.parent.parent / "downloads" / "extracted"
-DEFAULT_BASELINE_DIR = Path(__file__).parent.parent.parent / "downloads" / "baseline"
-DEFAULT_BINDIFF_DIR = Path(__file__).parent.parent.parent / "downloads" / "bindiff"
+console = Console()
 
 
 @dataclass

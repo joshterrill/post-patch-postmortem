@@ -11,12 +11,11 @@ from typing import Optional
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
+from .config import EXTRACTED_DIR as DEFAULT_EXTRACTED_DIR
+from .config import PACKAGES_DIR as DEFAULT_PACKAGES_DIR
 from .models import Architecture, DownloadedFile
 
 console = Console()
-
-DEFAULT_PACKAGES_DIR = Path(__file__).parent.parent.parent / "downloads" / "packages"
-DEFAULT_EXTRACTED_DIR = Path(__file__).parent.parent.parent / "downloads" / "extracted"
 
 BINARY_EXTENSIONS = {
     ".dll",

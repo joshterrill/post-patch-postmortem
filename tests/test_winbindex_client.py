@@ -1,6 +1,7 @@
 """Tests for ppp.winbindex_client module."""
 
 import gzip
+import hashlib
 import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -667,6 +668,37 @@ class TestDownloadFileVersion:
         
         assert result is not None
         assert result.exists()
+
+    @respx.mock
+    def test_download_file_version_falls_back_to_update_catalog(self, tmp_path: Path):
+        """Test recovering a binary from its KB package when symbol URLs are missing."""
+        content = b"catalog tcpip bytes"
+        sha256 = hashlib.sha256(content).hexdigest()
+        extracted_file = tmp_path / "extracted" / "KB5083631" / "x64" / "tcpip.sys"
+        extracted_file.parent.mkdir(parents=True)
+        extracted_file.write_bytes(content)
+
+        respx.head(url__startswith="https://msdl.microsoft.com").mock(return_value=httpx.Response(404))
+        respx.head(url__startswith="https://symbols.nuget.org").mock(return_value=httpx.Response(404))
+
+        file_info = WinBIndexFile(
+            filename="tcpip.sys",
+            version="10.0.26100.8328 (WinBuild.160101.0800)",
+            architecture=Architecture.X64,
+            sha256=sha256,
+            download_url="https://msdl.microsoft.com/download/symbols/tcpip.sys/missing/tcpip.sys",
+            updates=[{"kb_number": "KB5083631"}],
+        )
+
+        with patch("ppp.catalog_client.download_by_kb", return_value=[tmp_path / "KB5083631.msu"]) as mock_download:
+            with patch("ppp.extractor.extract_by_kb", return_value=[]):
+                with patch("ppp.extractor.list_extracted_files", return_value=[extracted_file]):
+                    result = download_file_version(file_info, output_dir=tmp_path / "downloads", show_progress=False)
+
+        assert result is not None
+        assert result.exists()
+        assert result.read_bytes() == content
+        mock_download.assert_called_once_with("KB5083631", Architecture.X64, show_progress=False)
 
 
 class TestFetchBaselineForExtracted:

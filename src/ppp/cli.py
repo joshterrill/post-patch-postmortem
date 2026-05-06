@@ -64,6 +64,12 @@ def _format_size(size: Optional[int]) -> str:
     return f"{size / 1024 / 1024:.2f} MB"
 
 
+def _format_sha256(sha256: str) -> str:
+    if len(sha256) <= 15:
+        return sha256
+    return f"{sha256[:6]}...{sha256[-6:]}"
+
+
 def _format_windows(entry: WinBIndexFile) -> str:
     values = [format_windows_version_value(value) for value in entry_windows_versions(entry)]
     if not values:
@@ -123,7 +129,7 @@ def _render_rows(title: str, rows: list[dict[str, str]], include_filename: bool)
     table = Table(title=title)
     if include_filename:
         table.add_column("Filename", style="cyan", no_wrap=True)
-    table.add_column("SHA256", style="dim", no_wrap=True)
+    table.add_column("SHA256", style="dim", no_wrap=True, min_width=15, max_width=15)
     table.add_column("Release Date", style="magenta", no_wrap=True)
     table.add_column("Windows Version", style="blue", no_wrap=True)
     table.add_column("Update(s)", style="yellow", no_wrap=True)
@@ -137,7 +143,7 @@ def _render_rows(title: str, rows: list[dict[str, str]], include_filename: bool)
             values.append(row["filename"])
         values.extend(
             [
-                row["sha256"],
+                _format_sha256(row["sha256"]),
                 row["release_date"],
                 row["windows"],
                 row["updates"],

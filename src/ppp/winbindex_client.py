@@ -3,6 +3,7 @@
 import hashlib
 import html as html_lib
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -18,13 +19,13 @@ from rich.progress import (
     TransferSpeedColumn,
 )
 
+from .config import BASELINE_DIR as DEFAULT_BASELINE_DIR
 from .models import Architecture, DownloadedFile, WinBIndexFile, WinBIndexUpdate
 
 console = Console()
 
 WINBINDEX_BASE = "https://winbindex.m417z.com"
 WINBINDEX_API = f"{WINBINDEX_BASE}/api"
-DEFAULT_BASELINE_DIR = Path(__file__).parent.parent.parent / "downloads" / "baseline"
 HEADERS = {"User-Agent": "PatchTuesdayAnalyzer/1.0", "Accept": "application/json"}
 
 
@@ -362,6 +363,129 @@ def _calculate_sha256(file_path: Path) -> str:
     return sha256_hash.hexdigest()
 
 
+def _valid_sha256(value: str) -> bool:
+    return bool(re.fullmatch(r"[a-fA-F0-9]{64}", value or ""))
+
+
+def _normalize_kb_number(kb_number: str) -> str:
+    kb = kb_number.strip().upper()
+    if not kb.startswith("KB"):
+        kb = f"KB{kb}"
+    return kb
+
+
+def _extracted_path_architecture(path: Path) -> Optional[Architecture]:
+    try:
+        return Architecture(path.parent.name.lower())
+    except ValueError:
+        return None
+
+
+def _file_version_tuple(version: Optional[str]) -> tuple[int, ...]:
+    if not version:
+        return ()
+    match = re.match(r"\s*(\d+(?:\.\d+){1,3})", version)
+    if match:
+        return _parse_version(match.group(1))
+    return _parse_version(version)
+
+
+def _write_verified_download(
+    temp_path: Path,
+    output_path: Path,
+    expected_sha256: Optional[str],
+) -> bool:
+    if expected_sha256:
+        actual_sha256 = _calculate_sha256(temp_path).lower()
+        if actual_sha256 != expected_sha256:
+            console.print(
+                f"[dim]Downloaded hash mismatch for {output_path.name}: "
+                f"{actual_sha256[:16]}... != {expected_sha256[:16]}...[/dim]"
+            )
+            temp_path.unlink(missing_ok=True)
+            return False
+    temp_path.replace(output_path)
+    return True
+
+
+def _find_extracted_match(
+    file_info: WinBIndexFile,
+    extracted_files: list[Path],
+) -> Optional[Path]:
+    clean_target = file_info.filename.lower()
+    name_matches: list[Path] = []
+    for path in extracted_files:
+        if _clean_filename(path.name.lower()) != clean_target:
+            continue
+        path_arch = _extracted_path_architecture(path)
+        if path_arch and path_arch != file_info.architecture:
+            continue
+        name_matches.append(path)
+
+    expected_sha256 = file_info.sha256.lower() if _valid_sha256(file_info.sha256) else None
+    if expected_sha256:
+        for path in name_matches:
+            if _calculate_sha256(path).lower() == expected_sha256:
+                return path
+
+    expected_version = _file_version_tuple(file_info.version)
+    if expected_version:
+        for path in name_matches:
+            if _file_version_tuple(_get_pe_version(path)) == expected_version:
+                return path
+
+    return None
+
+
+def _download_file_version_from_catalog(
+    file_info: WinBIndexFile,
+    output_path: Path,
+    show_progress: bool,
+) -> Optional[Path]:
+    kb_numbers: list[str] = []
+    seen_kbs: set[str] = set()
+    for update in file_info.updates:
+        if not update.kb_number:
+            continue
+        kb = _normalize_kb_number(update.kb_number)
+        if kb in seen_kbs:
+            continue
+        seen_kbs.add(kb)
+        kb_numbers.append(kb)
+
+    if not kb_numbers:
+        return None
+
+    from .catalog_client import download_by_kb
+    from .extractor import extract_by_kb, list_extracted_files
+
+    expected_sha256 = file_info.sha256.lower() if _valid_sha256(file_info.sha256) else None
+    temp_path = output_path.with_name(f"{output_path.name}.part")
+    for kb in kb_numbers:
+        console.print(
+            f"[yellow]Symbol server download failed; trying {kb} from Microsoft Update Catalog...[/yellow]"
+        )
+        try:
+            download_by_kb(kb, file_info.architecture, show_progress=show_progress)
+            extract_by_kb(kb)
+            match = _find_extracted_match(file_info, list_extracted_files(kb))
+            if not match:
+                console.print(f"[dim]No matching {file_info.filename} found in extracted {kb} files[/dim]")
+                continue
+
+            temp_path.unlink(missing_ok=True)
+            shutil.copy2(match, temp_path)
+            if not _write_verified_download(temp_path, output_path, expected_sha256):
+                continue
+            console.print(f"[green]Downloaded from update package: {output_path}[/green]")
+            return output_path
+        except Exception as e:
+            temp_path.unlink(missing_ok=True)
+            console.print(f"[dim]Failed to recover from {kb}: {e}[/dim]")
+
+    return None
+
+
 def download_file_version(
     file_info: WinBIndexFile,
     output_dir: Optional[Path] = None,
@@ -381,8 +505,17 @@ def download_file_version(
     versioned_name = f"{base_name}_{file_info.version.replace('.', '_')}{extension}"
     output_path = arch_dir / versioned_name
     if output_path.exists():
-        console.print(f"[yellow]Already downloaded: {versioned_name}[/yellow]")
-        return output_path
+        if _valid_sha256(file_info.sha256):
+            actual_sha256 = _calculate_sha256(output_path).lower()
+            if actual_sha256 != file_info.sha256.lower():
+                console.print(f"[yellow]Existing download hash mismatch, redownloading: {versioned_name}[/yellow]")
+                output_path.unlink(missing_ok=True)
+            else:
+                console.print(f"[yellow]Already downloaded: {versioned_name}[/yellow]")
+                return output_path
+        else:
+            console.print(f"[yellow]Already downloaded: {versioned_name}[/yellow]")
+            return output_path
     download_urls = list(file_info.download_urls)
     if file_info.download_url:
         download_urls.insert(0, file_info.download_url)
@@ -401,7 +534,9 @@ def download_file_version(
     for url in deduped_urls:
         if not url:
             continue
+        temp_path = output_path.with_name(f"{output_path.name}.part")
         try:
+            temp_path.unlink(missing_ok=True)
             with httpx.Client(timeout=120.0, follow_redirects=True) as client:
                 head_response = client.head(url, headers=HEADERS)
                 if head_response.status_code != 200:
@@ -429,19 +564,27 @@ def download_file_version(
                                 filename=versioned_name,
                             )
                             
-                            with open(output_path, "wb") as f:
+                            with open(temp_path, "wb") as f:
                                 for chunk in response.iter_bytes(chunk_size=8192):
                                     f.write(chunk)
                                     progress.update(task, advance=len(chunk))
                     else:
-                        with open(output_path, "wb") as f:
+                        with open(temp_path, "wb") as f:
                             for chunk in response.iter_bytes(chunk_size=8192):
                                 f.write(chunk)
+                    expected_sha256 = file_info.sha256.lower() if _valid_sha256(file_info.sha256) else None
+                    if not _write_verified_download(temp_path, output_path, expected_sha256):
+                        continue
                     console.print(f"[green]Downloaded: {output_path}[/green]")
                     return output_path
         except Exception as e:
+            temp_path.unlink(missing_ok=True)
             console.print(f"[dim]Failed to download from {url[:50]}...: {e}[/dim]")
             continue
+
+    catalog_path = _download_file_version_from_catalog(file_info, output_path, show_progress)
+    if catalog_path:
+        return catalog_path
     
     console.print(f"[red]Could not download {file_info.filename} v{file_info.version}[/red]")
     return None

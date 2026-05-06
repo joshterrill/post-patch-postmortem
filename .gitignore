@@ -7,7 +7,7 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-downloads/
+artifacts/
 eggs/
 .eggs/
 lib/
@@ -33,10 +33,10 @@ ENV/
 
 # Project specific
 data/*.db
-downloads/packages/*
-downloads/extracted/*
-downloads/baseline/*
-!downloads/*/.gitkeep
+artifacts/packages/*
+artifacts/extracted/*
+artifacts/baseline/*
+!artifacts/*/.gitkeep
 
 # OS
 .DS_Store

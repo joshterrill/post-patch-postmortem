@@ -10,7 +10,7 @@ def sample_downloaded_file() -> DownloadedFile:
     return DownloadedFile(
         kb_number="KB5034441",
         filename="ntdll.dll",
-        file_path="/downloads/extracted/KB5034441/x64/ntdll.dll",
+        file_path="/artifacts/extracted/KB5034441/x64/ntdll.dll",
         file_type="extracted",
         architecture=Architecture.X64,
         version="10.0.22621.3007",
